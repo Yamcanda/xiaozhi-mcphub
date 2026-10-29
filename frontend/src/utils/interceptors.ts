@@ -1,7 +1,27 @@
-import { addInterceptor, removeInterceptor, type FetchInterceptor } from './fetchInterceptor';
+import { addInterceptor, removeInterceptor, type FetchInterceptor } from './fetchInterceptor.js';
+import { getApiUrl } from './runtime.js';
 
 // Token key in localStorage
 const TOKEN_KEY = 'mcphub_token';
+const AUTH_REVISION_KEY = 'mcphub_auth_revision';
+const invalidationListeners = new Set<() => void>();
+
+// Read shared storage so a login in another tab also supersedes outstanding requests.
+export const getAuthRevision = (): string | null => localStorage.getItem(AUTH_REVISION_KEY);
+
+const advanceAuthRevision = (): void => {
+  localStorage.setItem(
+    AUTH_REVISION_KEY,
+    Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-'),
+  );
+};
+
+export const subscribeAuthInvalidation = (listener: () => void): (() => void) => {
+  invalidationListeners.add(listener);
+  return () => {
+    invalidationListeners.delete(listener);
+  };
+};
 
 // Get token from localStorage
 export const getToken = (): string | null => {
@@ -11,11 +31,36 @@ export const getToken = (): string | null => {
 // Set token in localStorage
 export const setToken = (token: string): void => {
   localStorage.setItem(TOKEN_KEY, token);
+  advanceAuthRevision();
 };
 
 // Remove token from localStorage
 export const removeToken = (): void => {
   localStorage.removeItem(TOKEN_KEY);
+  advanceAuthRevision();
+};
+
+const isJwtProtectedRequest = (url: string): boolean => {
+  const origin = window.location.origin;
+  const requestUrl = new URL(url, origin);
+  const apiUrl = new URL(getApiUrl('/'), origin);
+  if (requestUrl.origin !== apiUrl.origin || !requestUrl.pathname.startsWith(apiUrl.pathname)) {
+    return false;
+  }
+  const endpoint = requestUrl.pathname.slice(apiUrl.pathname.length);
+  // These endpoints authenticate credentials or cookies, not the dashboard JWT.
+  return (
+    ![
+      'auth/login',
+      'auth/register',
+      'auth/verify-email',
+      'auth/forgot-password',
+      'auth/verify-reset-token',
+      'auth/reset-password',
+    ].includes(endpoint) &&
+    !endpoint.startsWith('better-auth/') &&
+    endpoint !== 'better-auth'
+  );
 };
 
 // Auth interceptor for automatically adding authorization headers
@@ -32,6 +77,7 @@ export const authInterceptor: FetchInterceptor = {
 
     return {
       url,
+      metadata: { authRevision: getAuthRevision() },
       config: {
         ...config,
         headers,
@@ -40,14 +86,18 @@ export const authInterceptor: FetchInterceptor = {
     };
   },
 
-  response: async (response: Response) => {
-    // Handle unauthorized responses
-    if (response.status === 401) {
-      // Token might be expired or invalid, remove it
+  response: async (response, request) => {
+    const sentToken = new Headers(request.config.headers).get('x-auth-token');
+    if (
+      response.status === 401 &&
+      isJwtProtectedRequest(request.url) &&
+      sentToken &&
+      sentToken === getToken() &&
+      request.metadata?.authRevision === getAuthRevision()
+    ) {
+      // A delayed rejection must never invalidate a newer login, even with the same JWT.
       removeToken();
-
-      // You could also trigger a redirect to login page here
-      // window.location.href = '/login';
+      invalidationListeners.forEach((listener) => listener());
     }
 
     return response;

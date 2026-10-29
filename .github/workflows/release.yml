@@ -54,16 +54,16 @@ jobs:
           cp -r frontend/dist "$PACKAGE_DIR/frontend-dist"
           
           # 复制必要文件
-          cp package.json pnpm-lock.yaml "$PACKAGE_DIR/"
+          cp package.json pnpm-lock.yaml pnpm-workspace.yaml "$PACKAGE_DIR/"
           cp README.md README.zh.md LICENSE "$PACKAGE_DIR/"
-          cp docker-compose.yml Dockerfile entrypoint.sh "$PACKAGE_DIR/"
+          cp docker-compose.yml docker-compose.sqlite.yml Dockerfile entrypoint.sh "$PACKAGE_DIR/"
           cp nginx.conf.example servers.json "$PACKAGE_DIR/"
           
           # 创建安装脚本
           cat > "$PACKAGE_DIR/install.sh" << 'EOF'
           #!/bin/bash
           echo "小智 MCP Hub v$VERSION 安装脚本"
-          echo "请确保已安装 Node.js 20+ 和 pnpm"
+          echo "请确保已安装 Node.js 22（推荐）和 pnpm"
           echo ""
           echo "1. 安装依赖: pnpm install --prod"
           echo "2. 启动服务: pnpm start"

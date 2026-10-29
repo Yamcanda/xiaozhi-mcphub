@@ -56,10 +56,7 @@ export const getXiaozhiStatus = async (req: Request, res: Response): Promise<voi
     const filteredEndpoints = (status.endpoints || []).filter((e) => endpointIds.has(e.id));
     const connected = filteredEndpoints.some((e) => e.status === 'connected');
     // Per-user "enabled" = any of their endpoints is enabled (no shared master switch)
-    const enabled = xiaozhiEndpointService.isEnabledForUser(
-      user.username || '',
-      isAdminUser(user),
-    );
+    const enabled = xiaozhiEndpointService.isEnabledForUser(user.username || '', isAdminUser(user));
 
     res.json({
       success: true,
@@ -94,9 +91,7 @@ export const getXiaozhiConfig = async (req: Request, res: Response): Promise<voi
     const compatConfig = {
       enabled: endpoints.some((ep) => ep.enabled),
       webSocketUrl:
-        endpoints.length > 0
-          ? endpoints[0].webSocketUrl.replace(/token=[^&?]*/g, 'token=***')
-          : '',
+        endpoints.length > 0 ? endpoints[0].webSocketUrl.replace(/token=[^&?]*/g, 'token=***') : '',
       reconnect:
         endpoints.length > 0
           ? endpoints[0].reconnect
@@ -460,6 +455,7 @@ export const reconnectXiaozhiEndpoint = async (req: Request, res: Response): Pro
 
 // 获取小智端点状态
 export const getXiaozhiEndpointStatus = (req: Request, res: Response): void => {
+  res.setHeader('Cache-Control', 'no-store');
   try {
     const user = getAuthUser(req);
     const { id } = req.params;
@@ -491,6 +487,7 @@ export const getXiaozhiEndpointStatus = (req: Request, res: Response): void => {
 
 // 获取所有小智端点状态（按当前用户过滤）
 export const getAllXiaozhiEndpointStatus = (req: Request, res: Response): void => {
+  res.setHeader('Cache-Control', 'no-store');
   try {
     const user = getAuthUser(req);
     const visibleIds = new Set(

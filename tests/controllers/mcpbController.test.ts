@@ -1,7 +1,6 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { execFileSync } from 'child_process';
 import AdmZip from 'adm-zip';
 import { Request, Response } from 'express';
 import { uploadMcpbFile } from '../../src/controllers/mcpbController.js';
@@ -131,22 +130,15 @@ describe('mcpbController - uploadMcpbFile', () => {
         server: { entry: 'server.js' },
       }),
     );
-    // Use Python zipfile to preserve traversal entry names
-    execFileSync(
-      'python3',
-      [
-        '-c',
-        `
-import zipfile
-z = zipfile.ZipFile(${JSON.stringify(mcpbFilePath)}, 'w')
-z.write(${JSON.stringify(path.join(staging, 'manifest.json'))}, 'manifest.json')
-z.writestr('../../../escaped-pwn.txt', 'pwned')
-z.writestr('subdir/../../outside.txt', 'out')
-z.close()
-`,
-      ],
-      { stdio: 'pipe' },
-    );
+    // AdmZip normalizes names passed to addFile, so set the entry names
+    // after creation to preserve traversal paths in the central directory.
+    const zip = new AdmZip();
+    zip.addLocalFile(path.join(staging, 'manifest.json'), '', 'manifest.json');
+    const traversalEntry = zip.addFile('traversal-placeholder', Buffer.from('pwned'));
+    traversalEntry.entryName = '../../../escaped-pwn.txt';
+    const nestedTraversalEntry = zip.addFile('nested-traversal-placeholder', Buffer.from('out'));
+    nestedTraversalEntry.entryName = 'subdir/../../outside.txt';
+    zip.writeZip(mcpbFilePath);
 
     const { response, json, status } = createResponse();
     await uploadMcpbFile({ file: { path: mcpbFilePath } } as Request, response);

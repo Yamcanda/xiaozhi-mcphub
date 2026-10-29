@@ -1355,6 +1355,7 @@
       "connecting": "Reconnexion…",
       "initialDelay": "Délai initial",
       "maxAttempts": "Tentatives max",
+      "nextAt": "Prochaine reconnexion",
       "title": "Reconnecter"
     },
     "status": {
@@ -1364,6 +1365,16 @@
       "enabled": "Activé",
       "service": "État du service",
       "totalEndpoints": "Total des points de terminaison",
+      "transportConnected": "WebSocket connecté",
+      "transportHint": "Le compteur indique le transport WebSocket local, pas une confirmation de Xiaozhi. Vérification toutes les 30 secondes ; sans pong sous 10 secondes, la connexion est rétablie.",
+      "unavailable": "État de connexion indisponible. L’ancien état a été effacé ; nouvelle tentative en cours.",
+      "toolsListSent": "Réponse de liste d’outils envoyée",
+      "toolsListPending": "En attente de la demande de Xiaozhi",
+      "lastPong": "Dernière réponse au ping",
+      "heartbeatPending": "En attente de la première vérification",
+      "lastClose": "Dernière déconnexion",
+      "uptime": "Durée de la connexion actuelle",
+      "connecting": "Connexion en cours",
       "unknown": "Inconnu"
     },
     "title": "Points de terminaison Xiaozhi",

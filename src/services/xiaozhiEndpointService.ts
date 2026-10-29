@@ -28,6 +28,8 @@ const DEFAULT_RECONNECT = {
 const DEFAULT_MAX_CONCURRENT_RECONNECTS = 3;
 /** Random jitter factor applied to reconnect delay (0–jitter). */
 const DEFAULT_RECONNECT_JITTER_RATIO = 0.2;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 10_000;
 
 interface EndpointConnection {
   ws: WebSocket;
@@ -44,6 +46,12 @@ interface EndpointConnection {
   lastCloseReason?: string;
   nextReconnectAt?: number;
   connectedAt?: number;
+  status: 'connected' | 'disconnected' | 'connecting';
+  heartbeatTimer?: NodeJS.Timeout;
+  pongTimer?: NodeJS.Timeout;
+  lastPongAt?: number;
+  lastCloseAt?: number;
+  toolsListSentAt?: number;
 }
 
 const logXiaozhi = (
@@ -112,8 +120,17 @@ const toRuntime = (connection: EndpointConnection | undefined): XiaozhiEndpointR
     connectedAt: connection.connectedAt
       ? new Date(connection.connectedAt).toISOString()
       : undefined,
+    lastPongAt: connection.lastPongAt ? new Date(connection.lastPongAt).toISOString() : undefined,
+    lastCloseAt: connection.lastCloseAt
+      ? new Date(connection.lastCloseAt).toISOString()
+      : undefined,
+    toolsListSentAt: connection.toolsListSentAt
+      ? new Date(connection.toolsListSentAt).toISOString()
+      : undefined,
     uptimeSeconds:
-      connection.connectedAt && connection.ws.readyState === WebSocket.OPEN
+      connection.connectedAt &&
+      connection.status === 'connected' &&
+      connection.ws.readyState === WebSocket.OPEN
         ? Math.floor((Date.now() - connection.connectedAt) / 1000)
         : undefined,
   };
@@ -122,6 +139,7 @@ const toRuntime = (connection: EndpointConnection | undefined): XiaozhiEndpointR
 export class XiaozhiEndpointService {
   private connections: Map<string, EndpointConnection> = new Map();
   private config: XiaozhiConfig | null = null;
+  private statusWrites: Map<string, Promise<void>> = new Map();
   private aggressiveReconnect: boolean;
   private reconnectInterval: number;
   private maxInfiniteRetries: number;
@@ -199,6 +217,10 @@ export class XiaozhiEndpointService {
     };
   }
 
+  public async preloadConfig(): Promise<void> {
+    await this.loadConfig();
+  }
+
   public async initializeEndpoints(): Promise<void> {
     await this.loadConfig();
 
@@ -219,6 +241,16 @@ export class XiaozhiEndpointService {
         if (i > 0 && this.maxConcurrentReconnects > 0) {
           await new Promise((r) => setTimeout(r, 50 * i));
         }
+        const current = this.connections.get(endpoint.id);
+        if (
+          current &&
+          current.status !== 'disconnected' &&
+          (current.ws.readyState === WebSocket.OPEN ||
+            current.ws.readyState === WebSocket.CONNECTING)
+        ) {
+          current.endpoint = { ...endpoint };
+          continue;
+        }
         await this.connectEndpoint(endpoint);
       } catch (error) {
         logXiaozhi('error', 'Failed to initialize endpoint', {
@@ -233,6 +265,7 @@ export class XiaozhiEndpointService {
   private async connectEndpoint(endpoint: XiaozhiEndpoint): Promise<void> {
     const prevConnection = this.connections.get(endpoint.id);
     await this.disconnectEndpoint(endpoint.id, { clearReconnectState: false });
+    if (this.connections.has(endpoint.id)) return;
 
     logXiaozhi('info', 'Connecting Xiaozhi endpoint', {
       endpointId: endpoint.id,
@@ -255,13 +288,16 @@ export class XiaozhiEndpointService {
       lastError: prevConnection?.lastError,
       lastCloseCode: prevConnection?.lastCloseCode,
       lastCloseReason: prevConnection?.lastCloseReason,
+      lastCloseAt: prevConnection?.lastCloseAt,
+      status: 'connecting',
     };
 
     this.connections.set(endpoint.id, connection);
     this.pendingReconnectIds.delete(endpoint.id);
-    void this.updateEndpointStatus(endpoint.id, 'connecting');
+    void this.updateEndpointStatus(endpoint.id, 'connecting', connection);
 
     ws.on('open', () => {
+      if (!this.isCurrentConnection(connection)) return;
       logXiaozhi('info', 'Xiaozhi endpoint connected', {
         endpointId: endpoint.id,
         name: endpoint.name,
@@ -273,12 +309,11 @@ export class XiaozhiEndpointService {
       connection.isInSleepMode = false;
       connection.reconnectPending = false;
       connection.lastError = undefined;
-      connection.lastCloseCode = undefined;
-      connection.lastCloseReason = undefined;
       connection.nextReconnectAt = undefined;
       connection.connectedAt = Date.now();
       this.pendingReconnectIds.delete(endpoint.id);
-      void this.updateEndpointStatus(endpoint.id, 'connected');
+      void this.updateEndpointStatus(endpoint.id, 'connected', connection);
+      this.startHeartbeat(connection);
 
       try {
         ws.send(
@@ -296,19 +331,23 @@ export class XiaozhiEndpointService {
     });
 
     ws.on('error', (error) => {
+      if (!this.isCurrentConnection(connection)) return;
       const message = error instanceof Error ? error.message : String(error);
-      connection.lastError = message;
-      logXiaozhi('error', 'Xiaozhi endpoint socket error', {
-        endpointId: endpoint.id,
-        name: endpoint.name,
-        error: message,
-      });
-      void this.updateEndpointStatus(endpoint.id, 'disconnected');
-      this.scheduleReconnect(connection);
+      this.failConnection(connection, message);
+    });
+
+    ws.on('pong', () => {
+      if (!this.isCurrentConnection(connection) || connection.status !== 'connected') return;
+      if (connection.pongTimer) clearTimeout(connection.pongTimer);
+      connection.pongTimer = undefined;
+      connection.lastPongAt = Date.now();
     });
 
     ws.on('close', (code, reasonBuf) => {
+      if (!this.isCurrentConnection(connection)) return;
+      this.stopHeartbeat(connection);
       const reason = reasonBuf?.toString() || '';
+      connection.lastCloseAt = Date.now();
       connection.lastCloseCode = code;
       connection.lastCloseReason = reason || undefined;
       if (!connection.lastError) {
@@ -321,19 +360,78 @@ export class XiaozhiEndpointService {
         code,
         reason: reason || undefined,
       });
-      void this.updateEndpointStatus(endpoint.id, 'disconnected');
+      void this.updateEndpointStatus(endpoint.id, 'disconnected', connection);
       this.scheduleReconnect(connection);
     });
 
     ws.on('message', (data) => {
-      void this.handleMessage(endpoint, data);
+      if (!this.isCurrentConnection(connection) || connection.status !== 'connected') return;
+      void this.handleMessage(connection, data);
     });
   }
 
+  private isCurrentConnection(connection: EndpointConnection): boolean {
+    return this.connections.get(connection.endpoint.id) === connection;
+  }
+
+  private stopHeartbeat(connection: EndpointConnection): void {
+    clearInterval(connection.heartbeatTimer);
+    clearTimeout(connection.pongTimer);
+    connection.heartbeatTimer = undefined;
+    connection.pongTimer = undefined;
+  }
+
+  private startHeartbeat(connection: EndpointConnection): void {
+    this.stopHeartbeat(connection);
+    connection.heartbeatTimer = setInterval(() => {
+      if (!this.isCurrentConnection(connection) || connection.status !== 'connected') return;
+      if (connection.ws.readyState !== WebSocket.OPEN) {
+        this.failConnection(connection, 'WebSocket is no longer open');
+        return;
+      }
+      if (connection.pongTimer) return;
+      connection.pongTimer = setTimeout(() => {
+        if (!this.isCurrentConnection(connection) || connection.status !== 'connected') return;
+        this.failConnection(connection, 'Heartbeat timed out: no pong within 10000ms');
+      }, HEARTBEAT_TIMEOUT_MS);
+      try {
+        connection.ws.ping((error?: Error) => {
+          if (!this.isCurrentConnection(connection) || connection.status !== 'connected') return;
+          if (error) this.failConnection(connection, `Heartbeat failed: ${error.message}`);
+        });
+      } catch (error) {
+        this.failConnection(
+          connection,
+          `Heartbeat failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private failConnection(connection: EndpointConnection, message: string): void {
+    if (!this.isCurrentConnection(connection) || connection.status === 'disconnected') return;
+    this.stopHeartbeat(connection);
+    connection.lastError = message;
+    connection.connectedAt = undefined;
+    logXiaozhi('warn', 'Xiaozhi endpoint connection failed', {
+      endpointId: connection.endpoint.id,
+      name: connection.endpoint.name,
+      error: message,
+    });
+    // Invalidate locally before terminating; close may be delayed or never arrive.
+    void this.updateEndpointStatus(connection.endpoint.id, 'disconnected', connection);
+    this.scheduleReconnect(connection);
+    connection.ws.terminate();
+  }
+
   private async handleMessage(
-    endpoint: XiaozhiEndpoint,
+    connection: EndpointConnection,
     data: WebSocket.RawData,
   ): Promise<void> {
+    const { endpoint } = connection;
+    const isActive = () =>
+      this.isCurrentConnection(connection) && connection.status === 'connected';
+    if (!isActive()) return;
     try {
       const message = JSON.parse(data.toString()) as {
         method?: string;
@@ -342,7 +440,7 @@ export class XiaozhiEndpointService {
       };
 
       if (message.method === 'initialize') {
-        await this.sendResponse(endpoint.id, message.id, {
+        await this.sendResponse(connection, message.id, {
           protocolVersion: '2024-11-05',
           serverInfo: {
             name: 'mcphub-xiaozhi-bridge',
@@ -356,12 +454,13 @@ export class XiaozhiEndpointService {
       }
 
       if (message.method === 'ping') {
-        await this.sendResponse(endpoint.id, message.id, {});
+        await this.sendResponse(connection, message.id, {});
         return;
       }
 
       if (message.method === 'tools/list') {
         const smartRoutingConfig = await getSmartRoutingConfig(endpoint.owner);
+        if (!isActive()) return;
         const extraParams: { sessionId: string; group?: string } = {
           sessionId: `xiaozhi-${endpoint.id}`,
         };
@@ -388,14 +487,16 @@ export class XiaozhiEndpointService {
         });
 
         const response = await handleListToolsRequest(message.params || {}, extraParams);
-        await this.sendResponse(endpoint.id, message.id, response);
+        if (!isActive()) return;
+        await this.sendResponse(connection, message.id, response);
+        if (isActive()) connection.toolsListSentAt = Date.now();
         return;
       }
 
       if (message.method === 'tools/call') {
         const smartRoutingConfig = await getSmartRoutingConfig(endpoint.owner);
-        const toolName =
-          typeof message.params?.name === 'string' ? message.params.name : undefined;
+        if (!isActive()) return;
+        const toolName = typeof message.params?.name === 'string' ? message.params.name : undefined;
         const isSmartRoutingTool = toolName === 'search_tools' || toolName === 'call_tool';
         const extraParams: { sessionId: string; group?: string } = {
           sessionId: `xiaozhi-${endpoint.id}`,
@@ -417,18 +518,21 @@ export class XiaozhiEndpointService {
         });
 
         const response = await handleCallToolRequest(message, extraParams);
-        await this.sendResponse(endpoint.id, message.id, response);
+        if (!isActive()) return;
+        await this.sendResponse(connection, message.id, response);
         return;
       }
+
+      if (message.method === 'notifications/initialized') return;
 
       logXiaozhi('warn', 'Unhandled Xiaozhi message method', {
         endpointId: endpoint.id,
         method: message.method,
       });
     } catch (error) {
+      if (!isActive()) return;
       const message = error instanceof Error ? error.message : String(error);
-      const connection = this.connections.get(endpoint.id);
-      if (connection) connection.lastError = message;
+      connection.lastError = message;
       logXiaozhi('error', 'Failed handling Xiaozhi message', {
         endpointId: endpoint.id,
         name: endpoint.name,
@@ -438,25 +542,32 @@ export class XiaozhiEndpointService {
   }
 
   private async sendResponse(
-    endpointId: string,
+    connection: EndpointConnection,
     messageId: unknown,
     result: unknown,
   ): Promise<void> {
-    const connection = this.connections.get(endpointId);
-    if (!connection || connection.ws.readyState !== WebSocket.OPEN) {
-      throw new Error(`Endpoint ${endpointId} is not connected`);
+    if (!this.isCurrentConnection(connection) || connection.status !== 'connected') return;
+    if (connection.ws.readyState !== WebSocket.OPEN) {
+      throw new Error(`Endpoint ${connection.endpoint.id} is not connected`);
     }
 
-    connection.ws.send(
-      JSON.stringify({
-        jsonrpc: '2.0' as const,
-        id: messageId,
-        result,
-      }),
-    );
+    await new Promise<void>((resolve, reject) => {
+      connection.ws.send(
+        JSON.stringify({ jsonrpc: '2.0' as const, id: messageId, result }),
+        (error?: Error) => {
+          if (!this.isCurrentConnection(connection) || connection.status !== 'connected') {
+            resolve();
+            return;
+          }
+          if (error) reject(error);
+          else resolve();
+        },
+      );
+    });
   }
 
   private scheduleReconnect(connection: EndpointConnection): void {
+    if (!this.isCurrentConnection(connection)) return;
     const { endpoint } = connection;
     if (!endpoint.enabled) {
       return;
@@ -481,6 +592,7 @@ export class XiaozhiEndpointService {
         deferMs,
       });
       connection.reconnectTimer = setTimeout(() => {
+        if (!this.isCurrentConnection(connection)) return;
         connection.reconnectTimer = undefined;
         this.scheduleReconnect(connection);
       }, deferMs);
@@ -500,6 +612,7 @@ export class XiaozhiEndpointService {
       });
 
       connection.reconnectTimer = setTimeout(async () => {
+        if (!this.isCurrentConnection(connection)) return;
         connection.reconnectTimer = undefined;
         connection.reconnectAttempts++;
         try {
@@ -557,6 +670,7 @@ export class XiaozhiEndpointService {
     });
 
     connection.reconnectTimer = setTimeout(async () => {
+      if (!this.isCurrentConnection(connection)) return;
       connection.reconnectTimer = undefined;
       connection.reconnectAttempts++;
       try {
@@ -574,6 +688,7 @@ export class XiaozhiEndpointService {
   }
 
   private scheduleInfiniteReconnect(connection: EndpointConnection): void {
+    if (!this.isCurrentConnection(connection)) return;
     const { endpoint } = connection;
     if (!endpoint.enabled) return;
 
@@ -620,6 +735,7 @@ export class XiaozhiEndpointService {
     });
 
     connection.reconnectTimer = setTimeout(async () => {
+      if (!this.isCurrentConnection(connection)) return;
       connection.reconnectTimer = undefined;
       try {
         await this.connectEndpoint(endpoint);
@@ -636,30 +752,37 @@ export class XiaozhiEndpointService {
     }, delay);
   }
 
-  private async updateEndpointStatus(
+  private updateEndpointStatus(
     endpointId: string,
     status: 'connected' | 'disconnected' | 'connecting',
+    connection?: EndpointConnection,
   ): Promise<void> {
-    try {
-      const endpointRepo = getXiaozhiEndpointRepository();
-      await endpointRepo.updateStatus(endpointId, status, new Date());
-    } catch (error) {
-      logXiaozhi('warn', 'Failed to persist endpoint status', {
-        endpointId,
-        status,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    if (connection && !this.isCurrentConnection(connection)) return Promise.resolve();
+    const changedAt = new Date();
+    if (connection) connection.status = status;
+    const endpoint = this.config?.endpoints.find((ep) => ep.id === endpointId);
+    if (endpoint) {
+      endpoint.status = status;
+      if (status === 'connected') endpoint.lastConnected = changedAt.toISOString();
     }
 
-    if (this.config) {
-      const idx = this.config.endpoints.findIndex((e) => e.id === endpointId);
-      if (idx >= 0) {
-        this.config.endpoints[idx].status = status;
-        if (status === 'connected') {
-          this.config.endpoints[idx].lastConnected = new Date().toISOString();
-        }
+    // Local state changes immediately; serialize persistence so older writes cannot win.
+    const write = (this.statusWrites.get(endpointId) || Promise.resolve()).then(async () => {
+      try {
+        await getXiaozhiEndpointRepository().updateStatus(endpointId, status, changedAt);
+      } catch (error) {
+        logXiaozhi('warn', 'Failed to persist endpoint status', {
+          endpointId,
+          status,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-    }
+    });
+    this.statusWrites.set(endpointId, write);
+    void write.then(() => {
+      if (this.statusWrites.get(endpointId) === write) this.statusWrites.delete(endpointId);
+    });
+    return write;
   }
 
   /**
@@ -679,9 +802,15 @@ export class XiaozhiEndpointService {
       connection.reconnectTimer = undefined;
     }
     this.pendingReconnectIds.delete(endpointId);
+    this.stopHeartbeat(connection);
+    connection.status = 'disconnected';
+    connection.connectedAt = undefined;
+    this.connections.delete(endpointId);
 
     if (connection.ws) {
       connection.ws.removeAllListeners();
+      // Aborting a CONNECTING socket emits an asynchronous error in ws.
+      connection.ws.on('error', () => {});
       if (
         connection.ws.readyState === WebSocket.OPEN ||
         connection.ws.readyState === WebSocket.CONNECTING
@@ -694,7 +823,6 @@ export class XiaozhiEndpointService {
       }
     }
 
-    this.connections.delete(endpointId);
     if (clearReconnectState) {
       void this.updateEndpointStatus(endpointId, 'disconnected');
     }
@@ -714,8 +842,22 @@ export class XiaozhiEndpointService {
     return this.getEndpointsForUser(username, isAdmin).some((ep) => ep.enabled);
   }
 
+  private getLiveStatus(endpointId: string): 'connected' | 'disconnected' | 'connecting' {
+    const connection = this.connections.get(endpointId);
+    if (connection?.status === 'connected' && connection.ws.readyState === WebSocket.OPEN) {
+      return 'connected';
+    }
+    if (connection?.status === 'connecting' && connection.ws.readyState === WebSocket.CONNECTING) {
+      return 'connecting';
+    }
+    return 'disconnected';
+  }
+
   public getAllEndpoints(): XiaozhiEndpoint[] {
-    return this.config?.endpoints || [];
+    return (this.config?.endpoints || []).map((endpoint) => ({
+      ...endpoint,
+      status: this.getLiveStatus(endpoint.id),
+    }));
   }
 
   public getEndpointsForUser(username: string, isAdmin: boolean): XiaozhiEndpoint[] {
@@ -785,10 +927,13 @@ export class XiaozhiEndpointService {
     if (updateData.enabled !== undefined) patch.enabled = updateData.enabled;
     if (updateData.webSocketUrl !== undefined) patch.webSocketUrl = updateData.webSocketUrl;
     if (updateData.description !== undefined) patch.description = updateData.description;
-    if (updateData.groupId !== undefined) patch.groupId = updateData.groupId ?? (null as unknown as string);
-    if (updateData.useSmartRouting !== undefined) patch.useSmartRouting = updateData.useSmartRouting;
+    if (updateData.groupId !== undefined)
+      patch.groupId = updateData.groupId ?? (null as unknown as string);
+    if (updateData.useSmartRouting !== undefined)
+      patch.useSmartRouting = updateData.useSmartRouting;
     if (updateData.reconnect !== undefined) patch.reconnect = updateData.reconnect;
-    if (updateData.owner !== undefined) patch.owner = updateData.owner ?? (null as unknown as string);
+    if (updateData.owner !== undefined)
+      patch.owner = updateData.owner ?? (null as unknown as string);
     if (updateData.status !== undefined) patch.status = updateData.status;
 
     const updated = await repo.updateById(endpointId, patch);
@@ -839,11 +984,18 @@ export class XiaozhiEndpointService {
     const endpoint = this.config.endpoints.find((e) => e.id === endpointId);
     if (!endpoint) return false;
 
-    // Manual reconnect resets attempt counters.
-    await this.disconnectEndpoint(endpointId, { clearReconnectState: true });
-
+    // Reset attempts, but retain the last close diagnostic across a manual reconnect.
+    const connection = this.connections.get(endpointId);
+    if (connection) {
+      connection.reconnectAttempts = 0;
+      connection.infiniteRetryCount = 0;
+      connection.isInInfiniteReconnectMode = false;
+      connection.isInSleepMode = false;
+    }
     if (endpoint.enabled) {
       await this.connectEndpoint(endpoint);
+    } else {
+      await this.disconnectEndpoint(endpointId);
     }
 
     return true;
@@ -856,10 +1008,10 @@ export class XiaozhiEndpointService {
     if (!endpoint) return null;
 
     const connection = this.connections.get(endpointId);
-    const connected = connection?.ws?.readyState === WebSocket.OPEN;
+    const connected = this.getLiveStatus(endpointId) === 'connected';
 
     return {
-      endpoint,
+      endpoint: { ...endpoint, status: this.getLiveStatus(endpointId) },
       connected,
       connectionCount: this.connections.size,
       lastConnected: endpoint.lastConnected,
@@ -874,8 +1026,8 @@ export class XiaozhiEndpointService {
     return this.config.endpoints.map((endpoint) => {
       const connection = this.connections.get(endpoint.id);
       return {
-        endpoint,
-        connected: connection?.ws?.readyState === WebSocket.OPEN || false,
+        endpoint: { ...endpoint, status: this.getLiveStatus(endpoint.id) },
+        connected: this.getLiveStatus(endpoint.id) === 'connected',
         connectionCount: this.connections.size,
         lastConnected: endpoint.lastConnected,
         error: connection?.lastError,
@@ -906,7 +1058,7 @@ export class XiaozhiEndpointService {
       endpoints: allStatus.map((s) => ({
         id: s.endpoint.id,
         name: s.endpoint.name,
-        status: s.connected ? 'connected' : s.endpoint.status || 'disconnected',
+        status: this.getLiveStatus(s.endpoint.id),
         webSocketUrl: s.endpoint.webSocketUrl,
         owner: s.endpoint.owner,
         error: s.error,
@@ -921,7 +1073,7 @@ export class XiaozhiEndpointService {
       const enabled = endpoints.filter((e) => e.enabled);
       let connected = 0;
       for (const ep of enabled) {
-        if (this.connections.get(ep.id)?.ws.readyState === WebSocket.OPEN) {
+        if (this.getLiveStatus(ep.id) === 'connected') {
           connected++;
         }
       }

@@ -10,13 +10,13 @@ import { formatTokens } from '@/utils/contextCost';
 import { Server } from '@/types';
 import { EndpointCopy } from '@/components/ui/EndpointCopy';
 import { ServerStatusDot } from '@/components/ui/StatusDot';
-import { apiGet } from '@/utils/fetchInterceptor';
+import { useXiaozhiEndpoints } from '../hooks/useXiaozhiEndpoints.js';
 
-const Stat: React.FC<{ label: string; value: React.ReactNode; tone?: 'ok' | 'warn' | 'err' | 'muted' | 'default' }> = ({
-  label,
-  value,
-  tone = 'default',
-}) => {
+const Stat: React.FC<{
+  label: string;
+  value: React.ReactNode;
+  tone?: 'ok' | 'warn' | 'err' | 'muted' | 'default';
+}> = ({ label, value, tone = 'default' }) => {
   const toneColor =
     tone === 'ok'
       ? 'oklch(0.4 0.13 145)'
@@ -87,9 +87,8 @@ const DashboardPage: React.FC = () => {
       total: allServers.length,
       online: allServers.filter((s: Server) => s.status === 'connected').length,
       disabled: allServers.filter((s: Server) => s.enabled === false).length,
-      offline: allServers.filter(
-        (s: Server) => s.status === 'disconnected' && s.enabled !== false,
-      ).length,
+      offline: allServers.filter((s: Server) => s.status === 'disconnected' && s.enabled !== false)
+        .length,
       connecting: allServers.filter(
         (s: Server) =>
           (s.status === 'connecting' || s.status === 'oauth_required') && s.enabled !== false,
@@ -104,37 +103,19 @@ const DashboardPage: React.FC = () => {
     [serverCosts],
   );
 
-  // Xiaozhi summary
-  const [xiaozhi, setXiaozhi] = React.useState({
-    enabled: false,
-    total: 0,
-    enabledCount: 0,
-    connectedCount: 0,
-  });
-
-  React.useEffect(() => {
-    const fetchXiaozhi = async () => {
-      try {
-        const configResp: any = await apiGet('/xiaozhi/config');
-        const statusResp: any = await apiGet('/xiaozhi/endpoints/status/all');
-
-        const cfg = configResp?.success ? configResp.data : null;
-        const eps = Array.isArray(cfg?.endpoints) ? cfg.endpoints : [];
-
-        setXiaozhi({
-          enabled: !!cfg?.enabled,
-          total: eps.length,
-          enabledCount: eps.filter((e: any) => e.enabled !== false).length,
-          connectedCount: statusResp?.success && Array.isArray(statusResp.data)
-            ? statusResp.data.filter((s: any) => s.connected).length
-            : 0,
-        });
-      } catch {
-        // Dashboard xiaozhi stats are non-critical; leave the defaults in place
-      }
-    };
-    fetchXiaozhi();
-  }, []);
+  const {
+    endpoints: xiaozhiEndpoints,
+    getEnabledCount: getXiaozhiEnabledCount,
+    getConnectedCount: getXiaozhiConnectedCount,
+    statusError: xiaozhiStatusError,
+    triggerRefresh: refreshXiaozhi,
+  } = useXiaozhiEndpoints();
+  const xiaozhi = {
+    enabled: xiaozhiEndpoints.some((endpoint) => endpoint.enabled),
+    total: xiaozhiEndpoints.length,
+    enabledCount: getXiaozhiEnabledCount(),
+    connectedCount: getXiaozhiConnectedCount(),
+  };
 
   const recentServers = useMemo(() => allServers.slice(0, 6), [allServers]);
   const baseUrl = installConfig?.baseUrl?.replace(/\/+$/, '') || '';
@@ -156,7 +137,13 @@ const DashboardPage: React.FC = () => {
           </p>
         </div>
         <div className="flex gap-2">
-          <button className="hub-btn" onClick={() => triggerRefresh()}>
+          <button
+            className="hub-btn"
+            onClick={() => {
+              triggerRefresh();
+              refreshXiaozhi();
+            }}
+          >
             <RefreshCw size={13} /> {t('common.refresh')}
           </button>
           <button className="hub-btn primary" onClick={() => navigate('/servers')}>
@@ -204,7 +191,11 @@ const DashboardPage: React.FC = () => {
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
           <Stat label={t('pages.dashboard.totalServers')} value={stats.total} />
           <Stat label={t('pages.dashboard.onlineServers')} value={stats.online} tone="ok" />
-          <Stat label={t('pages.dashboard.connectingServers')} value={stats.connecting} tone="warn" />
+          <Stat
+            label={t('pages.dashboard.connectingServers')}
+            value={stats.connecting}
+            tone="warn"
+          />
           <Stat label={t('pages.dashboard.offlineServers')} value={stats.offline} tone="err" />
           <Stat label={t('pages.dashboard.disabledServers')} value={stats.disabled} tone="muted" />
           <Stat label={t('cost.totalFootprint')} value={formatTokens(footprint)} />
@@ -222,9 +213,9 @@ const DashboardPage: React.FC = () => {
           <Stat label={t('xiaozhi.status.totalEndpoints')} value={xiaozhi.total} />
           <Stat label={t('xiaozhi.status.enabled')} value={xiaozhi.enabledCount} />
           <Stat
-            label={t('xiaozhi.status.connected')}
-            value={xiaozhi.connectedCount}
-            tone={xiaozhi.connectedCount > 0 ? 'ok' : 'muted'}
+            label={t('xiaozhi.status.transportConnected')}
+            value={xiaozhiStatusError ? t('xiaozhi.status.unknown') : xiaozhi.connectedCount}
+            tone={!xiaozhiStatusError && xiaozhi.connectedCount > 0 ? 'ok' : 'muted'}
           />
         </div>
       )}
@@ -268,11 +259,16 @@ const DashboardPage: React.FC = () => {
               <div className="flex items-center gap-2 min-w-0">
                 <span
                   className="hub-mono truncate"
-                  style={{ fontSize: 13, color: s.enabled === false ? 'var(--hub-ink-3)' : 'var(--hub-ink)' }}
+                  style={{
+                    fontSize: 13,
+                    color: s.enabled === false ? 'var(--hub-ink-3)' : 'var(--hub-ink)',
+                  }}
                 >
                   {s.name}
                 </span>
-                {s.error && <AlertCircle size={13} className="text-[var(--hub-err)] flex-shrink-0" />}
+                {s.error && (
+                  <AlertCircle size={13} className="text-[var(--hub-err)] flex-shrink-0" />
+                )}
               </div>
               <div className="min-w-0">
                 <ServerStatusDot status={s.status} enabled={s.enabled} />
@@ -289,13 +285,22 @@ const DashboardPage: React.FC = () => {
               <div className="hub-num hub-mono" style={{ fontSize: 12.5 }}>
                 {s.tools?.length || 0}
               </div>
-              <div className="hub-num hub-mono" style={{ fontSize: 12.5, color: 'var(--hub-ink-2)' }}>
+              <div
+                className="hub-num hub-mono"
+                style={{ fontSize: 12.5, color: 'var(--hub-ink-2)' }}
+              >
                 {s.prompts?.length || 0}
               </div>
-              <div className="hub-num hub-mono" style={{ fontSize: 12.5, color: 'var(--hub-ink-2)' }}>
+              <div
+                className="hub-num hub-mono"
+                style={{ fontSize: 12.5, color: 'var(--hub-ink-2)' }}
+              >
                 {s.resources?.length || 0}
               </div>
-              <div className="text-[12px]" style={{ color: s.enabled !== false ? 'var(--hub-ok)' : 'var(--hub-ink-3)' }}>
+              <div
+                className="text-[12px]"
+                style={{ color: s.enabled !== false ? 'var(--hub-ok)' : 'var(--hub-ink-3)' }}
+              >
                 {s.enabled !== false ? '✓' : '—'}
               </div>
             </div>
@@ -303,7 +308,7 @@ const DashboardPage: React.FC = () => {
         </div>
       )}
 
-            {/* Endpoint quick-access */}
+      {/* Endpoint quick-access */}
       <div className="hub-card mb-5" style={{ padding: 16 }}>
         <div className="flex justify-between items-start gap-3 mb-3">
           <div>

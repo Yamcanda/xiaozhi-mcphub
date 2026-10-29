@@ -3,13 +3,20 @@ import {
   LoginCredentials,
   RegisterCredentials,
   ChangePasswordCredentials,
-} from '../types';
-import { apiPost, apiGet } from '../utils/fetchInterceptor';
-import { getToken, setToken, removeToken } from '../utils/interceptors';
-import { authClient } from './betterAuthClient';
+} from '../types/index.js';
+import { apiPost, fetchWithInterceptors } from '../utils/fetchInterceptor.js';
+import {
+  getToken,
+  setToken,
+  removeToken,
+  getAuthRevision,
+  subscribeAuthInvalidation,
+} from '../utils/interceptors.js';
+import { getApiUrl } from '../utils/runtime.js';
+import { authClient } from './betterAuthClient.js';
 
 // Export token management functions
-export { getToken, setToken, removeToken };
+export { getToken, setToken, removeToken, getAuthRevision, subscribeAuthInvalidation };
 
 // Login user
 export const login = async (credentials: LoginCredentials): Promise<AuthResponse> => {
@@ -18,7 +25,6 @@ export const login = async (credentials: LoginCredentials): Promise<AuthResponse
 
     // The auth API returns data directly, not wrapped in a data field
     if (response.success && response.token) {
-      setToken(response.token);
       return response;
     }
 
@@ -43,7 +49,6 @@ export const register = async (credentials: RegisterCredentials): Promise<AuthRe
 
     // Direct login path: backend returns a token when email verification is off
     if (response.success && response.token) {
-      setToken(response.token);
       return response;
     }
 
@@ -106,10 +111,7 @@ export const verifyResetToken = async (token: string): Promise<AuthResponse> => 
 };
 
 // Consume a reset token and set a new password
-export const resetPassword = async (
-  token: string,
-  newPassword: string,
-): Promise<AuthResponse> => {
+export const resetPassword = async (token: string, newPassword: string): Promise<AuthResponse> => {
   try {
     return await apiPost<AuthResponse>('/auth/reset-password', { token, newPassword });
   } catch (error) {
@@ -121,42 +123,27 @@ export const resetPassword = async (
   }
 };
 
+export class AuthSessionUnavailableError extends Error {}
+
+const getSessionUser = async (endpoint: string): Promise<AuthResponse> => {
+  const response = await fetchWithInterceptors(getApiUrl(endpoint), { method: 'GET' });
+  if (response.status === 401) return { success: false };
+  if (!response.ok) throw new AuthSessionUnavailableError('Unable to verify the current session');
+  const result: AuthResponse = await response.json();
+  if (!result.success || !result.user) {
+    throw new AuthSessionUnavailableError('Invalid session response');
+  }
+  return result;
+};
+
 // Get current user
 export const getCurrentUser = async (): Promise<AuthResponse> => {
-  const token = getToken();
-
-  if (!token) {
-    return {
-      success: false,
-      message: 'No authentication token',
-    };
-  }
-
-  try {
-    const response = await apiGet<AuthResponse>('/auth/user');
-    return response;
-  } catch (error) {
-    console.error('Get current user error', { error });
-    return {
-      success: false,
-      message: 'An error occurred while fetching user data',
-    };
-  }
+  if (!getToken()) return { success: false, message: 'No authentication token' };
+  return getSessionUser('/auth/user');
 };
 
-// Get current user via Better Auth session
-export const getBetterAuthUser = async (): Promise<AuthResponse> => {
-  try {
-    const response = await apiGet<AuthResponse>('/better-auth/user');
-    return response;
-  } catch (error) {
-    console.error('Get Better Auth user error', { error });
-    return {
-      success: false,
-      message: 'An error occurred while fetching user data',
-    };
-  }
-};
+// Get current user via Better Auth session; absence of a cookie is not JWT rejection.
+export const getBetterAuthUser = (): Promise<AuthResponse> => getSessionUser('/better-auth/user');
 
 // Change password
 export const changePassword = async (

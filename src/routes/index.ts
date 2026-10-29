@@ -25,7 +25,10 @@ import {
   resetResourceDescription,
   updateSystemConfig,
 } from '../controllers/serverController.js';
-import { getServerCostsHandler, getGroupCostsHandler } from '../controllers/contextCostController.js';
+import {
+  getServerCostsHandler,
+  getGroupCostsHandler,
+} from '../controllers/contextCostController.js';
 import {
   getGroups,
   getGroup,
@@ -203,6 +206,11 @@ import { sendTestEmail } from '../controllers/emailController.js';
 
 const router = express.Router();
 const authenticatedRouter = express.Router();
+let closeAuthStorage: (() => Promise<void>) | undefined;
+
+export const closeRouteResources = async (): Promise<void> => {
+  await closeAuthStorage?.();
+};
 
 export const initRoutes = async (app: express.Application): Promise<void> => {
   const isTestEnv =
@@ -212,10 +220,11 @@ export const initRoutes = async (app: express.Application): Promise<void> => {
   const betterAuthConfig = await getBetterAuthRuntimeConfig();
 
   if (betterAuthConfig.enabled && !isTestEnv) {
-    const [{ auth: betterAuth, ensureBetterAuthSchema }, { toNodeHandler }] = await Promise.all([
-      import('../betterAuth.js'),
-      import('better-auth/node'),
-    ]);
+    const [
+      { auth: betterAuth, ensureBetterAuthSchema, closeBetterAuthDatabase },
+      { toNodeHandler },
+    ] = await Promise.all([import('../betterAuth.js'), import('better-auth/node')]);
+    closeAuthStorage = closeBetterAuthDatabase;
     await ensureBetterAuthSchema();
     const betterAuthPath = `${config.basePath}${betterAuthConfig.basePath}`;
     app.all(`${betterAuthPath}`, toNodeHandler(betterAuth));
@@ -238,11 +247,25 @@ export const initRoutes = async (app: express.Application): Promise<void> => {
 
   // OAuth Authorization Server endpoints (no auth required for OAuth flow)
   app.get('/oauth/authorize', mcpConnectionRateLimiter, getAuthorize);
-  app.post('/oauth/authorize', express.urlencoded({ extended: true }), mcpConnectionRateLimiter, postAuthorize);
-  app.post('/oauth/token', express.urlencoded({ extended: true }), mcpConnectionRateLimiter, postToken); // Public endpoint for token exchange
+  app.post(
+    '/oauth/authorize',
+    express.urlencoded({ extended: true }),
+    mcpConnectionRateLimiter,
+    postAuthorize,
+  );
+  app.post(
+    '/oauth/token',
+    express.urlencoded({ extended: true }),
+    mcpConnectionRateLimiter,
+    postToken,
+  ); // Public endpoint for token exchange
   app.get('/oauth/userinfo', mcpConnectionRateLimiter, getUserInfo); // Validates OAuth token
   app.get('/.well-known/oauth-authorization-server', mcpConnectionRateLimiter, getMetadata); // Public metadata endpoint
-  app.get('/.well-known/oauth-protected-resource', mcpConnectionRateLimiter, getProtectedResourceMetadata); // Public protected resource metadata
+  app.get(
+    '/.well-known/oauth-protected-resource',
+    mcpConnectionRateLimiter,
+    getProtectedResourceMetadata,
+  ); // Public protected resource metadata
 
   // RFC 7591 Dynamic Client Registration endpoints (public for registration)
   app.post('/oauth/register', registerClient); // Register new OAuth client
@@ -466,7 +489,9 @@ export const initRoutes = async (app: express.Application): Promise<void> => {
     [
       check('username', 'Username is required').not().isEmpty(),
       check('password', 'Password must be at least 6 characters').isLength({ min: 6 }),
-      check('email', 'Email must be valid').optional({ nullable: true, checkFalsy: true }).isEmail(),
+      check('email', 'Email must be valid')
+        .optional({ nullable: true, checkFalsy: true })
+        .isEmail(),
     ],
     register,
   );

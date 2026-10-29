@@ -21,7 +21,7 @@ Layout map (read the directory when you need specifics, don't expand it here):
 
 - `src/{routes,controllers,services,dao,db,middlewares,models,utils,types,config,clients}/`
 - `src/services/mcpService.ts` — **core** MCP connection/lifecycle logic
-- `src/dao/` + `src/db/` — dual datasource (JSON file by default, PostgreSQL when `USE_DB=true`)
+- `src/dao/` + `src/db/` — JSON file by default; PostgreSQL or SQLite selected by `DB_URL` (unless `USE_DB=false`)
 - `tests/` mirrors `src/`; colocated `*.test.ts` also picked up
 - `locales/{en,fr,tr,zh}.json` — i18n strings
 - `dist/`, `frontend/dist/`, `coverage/` — generated; never hand-edit
@@ -54,7 +54,7 @@ Backend listens on `:3000` (or `$PORT`). Frontend dev server `:5173` proxies API
 pnpm lint && pnpm test:ci && pnpm build
 ```
 
-The runtime requirement is `^18.0.0 || >=20.0.0` (see `package.json`); CI runs on Node 20.x, and the published Docker image is built on Node 22 (see `Dockerfile`). If a hook fails, fix the root cause — do **not** bypass with `--no-verify`.
+The package runtime requirement is `^18.0.0 || >=20.0.0` (see `package.json`); SQLite additionally requires a Node version supported by `better-sqlite3` (Node 22 recommended; not Node 18) and its native build. CI runs on Node 20.x, and the published Docker image is built on Node 22 (see `Dockerfile`). If a hook fails, fix the root cause — do **not** bypass with `--no-verify`.
 
 ### Post-change manual checks (when relevant)
 
@@ -82,9 +82,9 @@ The runtime requirement is `^18.0.0 || >=20.0.0` (see `package.json`); CI runs o
 
 ## 4. Architecture invariants
 
-### Dual datasource (JSON ⇄ PostgreSQL)
+### Storage backends (JSON ⇄ PostgreSQL / SQLite)
 
-`USE_DB=true` + `DB_URL` switches storage from `mcp_settings.json` to Postgres via TypeORM.
+`DB_URL` enables TypeORM storage: `postgres://` / `postgresql://` select PostgreSQL, `sqlite:./data/mcphub.sqlite` selects SQLite. `USE_DB=false` forces JSON; legacy `DATABASE_URL` remains a fallback. SQLite uses per-datasource schemas from `src/db/entities/databaseEntities.ts` without changing PostgreSQL decorators. Vector search is PostgreSQL/pgvector-only; never execute its bootstrap or SQL on SQLite.
 
 **When adding/changing a persisted field, update every layer or migrations will silently drop it:**
 

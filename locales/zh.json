@@ -1322,6 +1322,15 @@
     "status": {
       "service": "服务状态",
       "totalEndpoints": "总端点数",
+      "transportConnected": "WebSocket 已连接",
+      "transportHint": "连接数仅表示本地 WebSocket 传输连接，不代表小智官方已确认在线。每 30 秒检测心跳，10 秒未收到 pong 将断开并重连。",
+      "unavailable": "无法获取最新连接状态，已清除旧状态；正在重试。",
+      "toolsListSent": "工具列表响应发送",
+      "toolsListPending": "等待小智请求",
+      "lastPong": "最近心跳响应",
+      "heartbeatPending": "等待首次检测",
+      "lastClose": "最近断开",
+      "uptime": "本次连接时长",
       "enabled": "已启用",
       "disabled": "已禁用",
       "connected": "已连接",
@@ -1341,6 +1350,7 @@
       "title": "重连",
       "connecting": "重连中...",
       "maxAttempts": "最大尝试次数",
+      "nextAt": "下次重连",
       "initialDelay": "初始延迟"
     },
     "modal": {

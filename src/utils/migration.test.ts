@@ -5,6 +5,7 @@ import { jest } from '@jest/globals';
 const initializeDatabaseMock = jest.fn(async () => undefined);
 const createQueryBuilderMock = jest.fn();
 const getAppDataSourceMock = jest.fn(() => ({
+  options: { type: 'postgres' },
   createQueryBuilder: createQueryBuilderMock,
 }));
 jest.mock('../db/connection.js', () => ({
@@ -233,6 +234,22 @@ describe('initializeDatabaseMode legacy bearer auth migration', () => {
     expect(runLegacySchemaMigrationsMock.mock.invocationCallOrder[0]).toBeLessThan(
       setDaoFactoryMock.mock.invocationCallOrder[0],
     );
+  });
+
+  it('skips PostgreSQL legacy SQL and JSON import for an existing SQLite store', async () => {
+    getAppDataSourceMock.mockReturnValueOnce({
+      options: { type: 'better-sqlite3' },
+      createQueryBuilder: createQueryBuilderMock,
+    });
+    userRepoCountMock.mockResolvedValue(1);
+    bearerKeyCountMock.mockResolvedValue(1);
+
+    const { initializeDatabaseMode } = await import('./migration.js');
+    expect(await initializeDatabaseMode()).toBe(true);
+    expect(runLegacySchemaMigrationsMock).not.toHaveBeenCalled();
+    expect(loadOriginalSettingsMock).not.toHaveBeenCalled();
+    expect(setDaoFactoryMock).toHaveBeenCalled();
+    expect(createQueryBuilderMock).toHaveBeenCalled();
   });
 
   it('skips legacy migration when bearerKeys table already has data', async () => {

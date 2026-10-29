@@ -67,6 +67,8 @@ import {
   removeServerToolEmbeddings,
   saveToolsAsVectorEmbeddings,
   searchToolsByVector,
+  getAllVectorizedTools,
+  syncAllServerToolsEmbeddings,
 } from '../../src/services/vectorSearchService.js';
 
 const stableHashSerialize = (value: unknown): string => {
@@ -90,7 +92,9 @@ const stableHashSerialize = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
-const buildToolSetHash = (tools: Array<{ name: string; description?: string; inputSchema?: unknown }>) =>
+const buildToolSetHash = (
+  tools: Array<{ name: string; description?: string; inputSchema?: unknown }>,
+) =>
   createHash('sha256')
     .update(
       stableHashSerialize(
@@ -137,6 +141,23 @@ describe('vectorSearchService', () => {
         return [];
       }),
     });
+  });
+
+  it('does not initialize vector storage, query repositories or generate embeddings for SQLite', async () => {
+    mockGetSmartRoutingConfig.mockResolvedValue({
+      enabled: true,
+      dbUrl: 'sqlite::memory:',
+      openaiApiKey: 'unused',
+    });
+
+    await saveToolsAsVectorEmbeddings('sqlite-server', [{ name: 'tool', description: 'Tool' }]);
+    await removeServerToolEmbeddings('sqlite-server');
+    await syncAllServerToolsEmbeddings();
+    expect(await searchToolsByVector('query')).toEqual([]);
+    expect(await getAllVectorizedTools()).toEqual([]);
+    expect(mockInitializeDatabase).not.toHaveBeenCalled();
+    expect(mockGetRepositoryFactory).not.toHaveBeenCalled();
+    expect(mockGetAppDataSource).not.toHaveBeenCalled();
   });
 
   it('reranks tool results using server similarity and reuses one query embedding', async () => {

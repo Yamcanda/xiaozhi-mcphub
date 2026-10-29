@@ -1,9 +1,15 @@
-import { getApiUrl } from './runtime';
+import { getApiUrl } from './runtime.js';
+
+export interface FetchRequestContext {
+  url: string;
+  config: RequestInit;
+  metadata?: Record<string, unknown>;
+}
 
 // Define the interceptor interface
 export interface FetchInterceptor {
-  request?: (url: string, config: RequestInit) => Promise<{ url: string; config: RequestInit }>;
-  response?: (response: Response) => Promise<Response>;
+  request?: (url: string, config: RequestInit) => Promise<FetchRequestContext>;
+  response?: (response: Response, request: FetchRequestContext) => Promise<Response>;
   error?: (error: Error) => Promise<Error>;
 }
 
@@ -24,18 +30,22 @@ let clickTimeoutId: ReturnType<typeof setTimeout> | null = null;
 const activeRequests = new WeakMap<HTMLButtonElement, number>();
 
 if (typeof document !== 'undefined') {
-  document.addEventListener('click', (e) => {
-    const target = e.target as HTMLElement;
-    const btn = target?.closest('button');
-    if (btn) {
-      lastClickedButton = btn as HTMLButtonElement;
-      if (clickTimeoutId) clearTimeout(clickTimeoutId);
-      // Give enough time for synchronous event handlers to initiate a fetch
-      clickTimeoutId = setTimeout(() => {
-        lastClickedButton = null;
-      }, 100);
-    }
-  }, true);
+  document.addEventListener(
+    'click',
+    (e) => {
+      const target = e.target as HTMLElement;
+      const btn = target?.closest('button');
+      if (btn) {
+        lastClickedButton = btn as HTMLButtonElement;
+        if (clickTimeoutId) clearTimeout(clickTimeoutId);
+        // Give enough time for synchronous event handlers to initiate a fetch
+        clickTimeoutId = setTimeout(() => {
+          lastClickedButton = null;
+        }, 100);
+      }
+    },
+    true,
+  );
 }
 // -----------------------------------------------
 
@@ -62,8 +72,9 @@ export const fetchWithInterceptors = async (
   input: string | URL | Request,
   init: RequestInit = {},
 ): Promise<Response> => {
-  let url = input.toString();
+  let url = input instanceof Request ? input.url : input.toString();
   let config = { ...init };
+  let metadata: FetchRequestContext['metadata'];
 
   // Capture button for UI feedback before any await suspends execution
   const btn = lastClickedButton;
@@ -80,6 +91,7 @@ export const fetchWithInterceptors = async (
         const result = await interceptor.request(url, config);
         url = result.url;
         config = result.config;
+        metadata = { ...metadata, ...result.metadata };
       }
     }
 
@@ -89,7 +101,7 @@ export const fetchWithInterceptors = async (
     // Apply response interceptors
     for (const interceptor of interceptors) {
       if (interceptor.response) {
-        response = await interceptor.response(response);
+        response = await interceptor.response(response, { url, config, metadata });
       }
     }
 

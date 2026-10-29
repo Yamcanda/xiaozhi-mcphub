@@ -86,7 +86,12 @@ import {
   isAppOnlyTool,
   stripMcpAppsMetadata,
 } from '../utils/mcpApps.js';
-import { supportsCacheRefresh, injectRefreshFlag, clearRunnerCache } from '../utils/cacheUtils.js';
+import {
+  supportsCacheRefresh,
+  injectRefreshFlag,
+  prepareRunnerCacheClear,
+} from '../utils/cacheUtils.js';
+import { stopStdioProcessTree } from '../utils/stdioProcess.js';
 
 const servers: { [sessionId: string]: Server } = {};
 
@@ -806,6 +811,7 @@ const isolatedClientCreationLocks = new Map<string, Promise<any>>();
 // Track servers pending a cache-refresh reinstall.
 // Consumed once by createTransportFromConfig on the next reconnect.
 const pendingReinstalls = new Set<string>();
+const activeReinstalls = new Set<string>();
 
 // Grace period after sending SIGTERM to a stdio process tree before falling back
 // to SIGKILL. Long enough to let well-behaved servers shut down cleanly, short
@@ -2181,9 +2187,43 @@ export const getServerByOAuthState = (state: string): ServerInfo | undefined => 
   return serverInfos.find((serverInfo) => serverInfo.oauth?.state === state);
 };
 
+const closeServerConnection = async (
+  serverInfo: ServerInfo,
+  stopProcessTree: boolean = false,
+): Promise<void> => {
+  const serverName = serverInfo.name;
+  if (serverInfo.keepAliveIntervalId) {
+    clearInterval(serverInfo.keepAliveIntervalId);
+    serverInfo.keepAliveIntervalId = undefined;
+  }
+
+  // Capture and stop descendants before SDK close can discard the wrapper PID.
+  const transport = serverInfo.transport as { pid?: unknown; close: () => Promise<void> } | undefined;
+  if (stopProcessTree && typeof transport?.pid === 'number') {
+    await stopStdioProcessTree(transport.pid);
+  }
+
+  if (serverInfo.client) {
+    try {
+      await serverInfo.client.close();
+    } catch (error) {
+      console.warn('Error closing client for server', { serverName, error });
+      if (stopProcessTree) throw error;
+    }
+  }
+
+  if (transport) {
+    try {
+      await transport.close();
+    } catch (error) {
+      console.warn('Error closing transport for server', { serverName, error });
+      if (stopProcessTree) throw error;
+    }
+  }
+};
+
 /**
- * Reconnect a server after OAuth authorization or configuration change
- * This will close the existing connection and reinitialize the server
+ * Reconnect a server after OAuth authorization or configuration change.
  */
 export const reconnectServer = async (serverName: string): Promise<void> => {
   console.log(`Reconnecting server: ${serverName}`);
@@ -2199,27 +2239,7 @@ export const reconnectServer = async (serverName: string): Promise<void> => {
     return;
   }
 
-  // Close existing connection if any
-  if (serverInfo.client) {
-    try {
-      serverInfo.client.close();
-    } catch (error) {
-      console.warn('Error closing client for server', { serverName, error });
-    }
-  }
-
-  if (serverInfo.transport) {
-    try {
-      serverInfo.transport.close();
-    } catch (error) {
-      console.warn('Error closing transport for server', { serverName, error });
-    }
-  }
-
-  if (serverInfo.keepAliveIntervalId) {
-    clearInterval(serverInfo.keepAliveIntervalId);
-    serverInfo.keepAliveIntervalId = undefined;
-  }
+  await closeServerConnection(serverInfo);
 
   // Reinitialize the server
   await initializeClientsFromSettings(false, serverName);
@@ -2227,10 +2247,31 @@ export const reconnectServer = async (serverName: string): Promise<void> => {
   console.log(`Successfully reconnected server: ${serverName}`);
 };
 
-// Reinstall server: clear package cache and reconnect.
-// For npx: deletes ~/.npm/_npx before reconnect (--ignore-existing removed in npm 7+).
-// For uvx: schedules --refresh flag injection on next spawn via pendingReinstalls Set.
+const prepareServerCacheClear = (serverConfig: ServerConfig) =>
+  prepareRunnerCacheClear(
+    serverConfig.command || '',
+    replaceEnvVars(serverConfig.args || []) as string[],
+    { ...process.env, ...replaceEnvVars(serverConfig.env || {}) },
+  );
+
+const sameCacheDirectory = (left: string, right: string): boolean =>
+  process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+
+// Reinstall server: refresh only its package cache, then reconnect.
+// For uvx, the --refresh flag is injected on the next spawn.
 export const reinstallServer = async (serverName: string): Promise<void> => {
+  if (activeReinstalls.has(serverName)) {
+    throw new Error(`Server reinstall is already in progress: ${serverName}`);
+  }
+  activeReinstalls.add(serverName);
+  try {
+    await reinstallServerRuntime(serverName);
+  } finally {
+    activeReinstalls.delete(serverName);
+  }
+};
+
+const reinstallServerRuntime = async (serverName: string): Promise<void> => {
   console.log(`Reinstalling server: ${serverName}`);
 
   const serverInfo = getServerByName(serverName);
@@ -2254,22 +2295,59 @@ export const reinstallServer = async (serverName: string): Promise<void> => {
     );
   }
 
-  // Mark server as pending reinstall (consumed by createTransportFromConfig for uvx)
+  if (serverConfig.perSessionClient) {
+    throw new Error('Cannot safely refresh a server with per-session clients');
+  }
+  if (serverInfo.status === 'connecting') {
+    throw new Error('Cannot safely refresh a server while it is connecting');
+  }
+
+  // Finish fallible discovery before touching a healthy connection.
+  const prepared = await prepareServerCacheClear(serverConfig);
+  if (prepared.targetDirectory) {
+    const configs = await getServerDao().findAll();
+    for (const peer of configs) {
+      if (
+        (peer.name === serverName && (peer.owner || 'admin') === (serverConfig.owner || 'admin')) ||
+        peer.enabled === false ||
+        peer.command !== 'npx'
+      ) {
+        continue;
+      }
+      const peerCache = await prepareServerCacheClear(peer);
+      if (
+        peerCache.targetDirectory &&
+        sameCacheDirectory(prepared.targetDirectory, peerCache.targetDirectory)
+      ) {
+        throw new Error('Cannot refresh an npx installation shared with another enabled server');
+      }
+    }
+  }
+
   pendingReinstalls.add(serverName);
-
   try {
-    // For npx, clear cache directory synchronously before reconnect.
-    // For uvx, this is a no-op — refresh is handled via --refresh flag injection.
-    await clearRunnerCache(command);
+    // Do not advertise stopped tools, even when shutdown or deletion fails.
+    serverInfo.status = 'disconnected';
+    serverInfo.tools = [];
+    serverInfo.prompts = [];
+    serverInfo.resources = [];
+    broadcastToolListChanged();
+    broadcastPromptListChanged();
+    broadcastResourceListChanged();
 
-    // Close and reconnect (will pick up pendingReinstalls flag for uvx)
-    await reconnectServer(serverName);
+    await closeServerConnection(serverInfo, true);
+    serverInfo.client = undefined;
+    serverInfo.transport = undefined;
+    await prepared.clear();
 
+    await initializeClientsFromSettings(false, serverName);
     console.log(`Successfully initiated reinstall for server: ${serverName}`);
   } catch (error) {
-    // Clean up pendingReinstalls on failure to avoid stale entries
-    pendingReinstalls.delete(serverName);
+    serverInfo.status = 'disconnected';
+    serverInfo.error = `Failed to reinstall: ${formatErrorForLogging(error)}`;
     throw error;
+  } finally {
+    pendingReinstalls.delete(serverName);
   }
 };
 

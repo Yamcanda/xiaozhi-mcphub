@@ -2,11 +2,27 @@
 .github
 
 node_modules
+**/node_modules
 frontend/node_modules
 
 dist
 frontend/dist
 coverage
+
+# Local persistent data, SQLite database files and journal/WAL sidecars
+data/
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/*.sqlite-journal
+**/*.sqlite-wal
+**/*.sqlite-shm
+**/*.sqlite3-journal
+**/*.sqlite3-wal
+**/*.sqlite3-shm
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
 
 .DS_Store
 .env

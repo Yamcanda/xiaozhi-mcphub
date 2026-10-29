@@ -5,6 +5,7 @@
     "module": "ESNext",
     "moduleResolution": "NodeNext",
     "isolatedModules": true,
+    "jsx": "react-jsx",
     "types": ["jest", "node"]
   },
   "include": ["src/**/*", "tests/**/*", "frontend/src/**/*"],

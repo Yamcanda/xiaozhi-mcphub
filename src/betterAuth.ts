@@ -1,11 +1,16 @@
 import { betterAuth, BetterAuthOptions } from 'better-auth';
 import { genericOAuth } from 'better-auth/plugins';
-import { PostgresDialect } from 'kysely';
+import type { Database as SqliteDatabase } from 'better-sqlite3';
+import { PostgresDialect, SqliteDialect } from 'kysely';
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import { Pool } from 'pg';
 import defaultConfig, { loadSettings } from './config/index.js';
+import { parseDatabaseUrl, prepareSqliteDatabase } from './config/database.js';
 import { getDatabaseUrlFromEnv } from './config/dbEnv.js';
 import { resolveBetterAuthRuntimeConfig } from './services/betterAuthConfig.js';
 import { resolveInstallBaseUrl } from './utils/installBaseUrl.js';
+import { getCurrentModuleDir } from './utils/moduleDir.js';
 import { getCachedSystemConfig, isDatabaseModeEnabled } from './utils/systemConfigCache.js';
 
 const resolveSystemConfig = () => {
@@ -97,20 +102,29 @@ const baseURL = resolveBaseURL(
 
 const databaseUrl = getDatabaseUrlFromEnv();
 if (!databaseUrl) {
-  throw new Error('DB_URL (or legacy DATABASE_URL) is required for Better Auth PostgreSQL storage.');
+  throw new Error('DB_URL (or legacy DATABASE_URL) is required for Better Auth database storage.');
 }
 
-const pool = new Pool({
-  connectionString: databaseUrl,
-});
+const databaseTarget = parseDatabaseUrl(databaseUrl);
+const storage = (() => {
+  if (databaseTarget.type === 'postgres') {
+    const pool = new Pool({ connectionString: databaseTarget.url });
+    return { type: 'postgres' as const, pool, dialect: new PostgresDialect({ pool }) };
+  }
 
-const database = new PostgresDialect({
-  pool,
-});
+  prepareSqliteDatabase(databaseTarget.database);
+  // Resolve from this package, not cwd, and never load the native binding for PostgreSQL.
+  const require = createRequire(path.join(getCurrentModuleDir(), '..', 'betterAuth.js'));
+  const Database = require('better-sqlite3') as typeof import('better-sqlite3');
+  // Auth owns its connection; :memory: is intentionally separate from TypeORM's database.
+  const sqlite: SqliteDatabase = new Database(databaseTarget.database);
+  sqlite.pragma('foreign_keys = ON');
+  return { type: 'sqlite' as const, sqlite, dialect: new SqliteDialect({ database: sqlite }) };
+})();
 
 const authOptions: BetterAuthOptions = {
   baseURL,
-  database,
+  database: storage.dialect,
   emailAndPassword: {
     enabled: false,
   },
@@ -139,6 +153,20 @@ const authOptions: BetterAuthOptions = {
 
 export const auth = betterAuth(authOptions);
 
+let closePromise: Promise<void> | undefined;
+
+/** Close the auth-owned connection separately from TypeORM during application shutdown. */
+export const closeBetterAuthDatabase = (): Promise<void> => {
+  closePromise ??= (async () => {
+    if (storage.type === 'postgres') {
+      await storage.pool.end();
+    } else if (storage.sqlite.open) {
+      storage.sqlite.close();
+    }
+  })();
+  return closePromise;
+};
+
 const extractMigrationTableName = (entry: unknown): string | null => {
   if (typeof entry === 'string') {
     return entry;
@@ -152,8 +180,13 @@ const extractMigrationTableName = (entry: unknown): string | null => {
 };
 
 const resolveCurrentSchema = async (): Promise<string> => {
+  if (storage.type === 'sqlite') {
+    return 'main';
+  }
   try {
-    const result = await pool.query<{ schema: string }>('select current_schema() as schema');
+    const result = await storage.pool.query<{ schema: string }>(
+      'select current_schema() as schema',
+    );
     return result.rows[0]?.schema || 'public';
   } catch {
     return 'public';
@@ -164,7 +197,17 @@ const listExistingTables = async (schema: string, tableNames: string[]): Promise
   if (!tableNames.length) {
     return new Set();
   }
-  const result = await pool.query<{ table_name: string }>(
+  if (storage.type === 'sqlite') {
+    const placeholders = tableNames.map(() => '?').join(', ');
+    const rows = storage.sqlite
+      .prepare<
+        string[],
+        { table_name: string }
+      >(`select name as table_name from sqlite_master where type = 'table' and name in (${placeholders})`)
+      .all(...tableNames);
+    return new Set(rows.map((row) => row.table_name));
+  }
+  const result = await storage.pool.query<{ table_name: string }>(
     'select table_name from information_schema.tables where table_schema = $1 and table_name = any($2)',
     [schema, tableNames],
   );
@@ -176,7 +219,9 @@ const isRelationAlreadyExistsError = (error: unknown): boolean => {
     return false;
   }
   const message = String((error as { message?: string }).message ?? '');
-  return /relation\s+".*"\s+already\s+exists/i.test(message);
+  return storage.type === 'sqlite'
+    ? /^(?:table|index)\s+.+\s+already\s+exists$/i.test(message)
+    : /relation\s+".*"\s+already\s+exists/i.test(message);
 };
 
 export const ensureBetterAuthSchema = async (): Promise<void> => {
