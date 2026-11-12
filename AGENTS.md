@@ -83,7 +83,9 @@ The runtime requirement is `>=24.0.0` (see `package.json`); CI runs on Node 24.x
 ## 4. Architecture invariants
 
 ### Storage backends (JSON ⇄ PostgreSQL / SQLite)
+### Storage backends (JSON ⇄ PostgreSQL / SQLite)
 
+`DB_URL` enables TypeORM storage: `postgres://` / `postgresql://` select PostgreSQL, `sqlite:./data/mcphub.sqlite` selects SQLite. `USE_DB=false` forces JSON; legacy `DATABASE_URL` remains a fallback. SQLite uses per-datasource schemas from `src/db/entities/databaseEntities.ts` without changing PostgreSQL decorators. Vector search is PostgreSQL/pgvector-only; never execute its bootstrap or SQL on SQLite.
 `DB_URL` enables TypeORM storage: `postgres://` / `postgresql://` select PostgreSQL, `sqlite:./data/mcphub.sqlite` selects SQLite. `USE_DB=false` forces JSON; legacy `DATABASE_URL` remains a fallback. SQLite uses per-datasource schemas from `src/db/entities/databaseEntities.ts` without changing PostgreSQL decorators. Vector search is PostgreSQL/pgvector-only; never execute its bootstrap or SQL on SQLite.
 
 **When adding/changing a persisted field, update every layer or migrations will silently drop it:**

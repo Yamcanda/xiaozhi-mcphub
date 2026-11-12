@@ -610,16 +610,7 @@ const attemptReconnection = (): Promise<DataSource> => {
         return await initializeDatabase();
       }
 
-      let dataSource = appDataSource;
-
-      if (dataSource.options.type === 'better-sqlite3' && dataSource.isInitialized) {
-        // Reopening an in-memory database destroys its data. SQLite is a local handle,
-        // not a network pool: check it in place rather than reconnecting on query errors.
-        await dataSource.query('SELECT 1');
-        isHealthy = true;
-        lastHealthCheckError = null;
-        return dataSource;
-      }
+      const dataSource = appDataSource;
 
       if (dataSource.isInitialized) {
         try {

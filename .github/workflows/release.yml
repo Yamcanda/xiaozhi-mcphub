@@ -55,7 +55,9 @@ jobs:
           
           # 复制必要文件
           cp package.json pnpm-lock.yaml pnpm-workspace.yaml "$PACKAGE_DIR/"
+          cp package.json pnpm-lock.yaml pnpm-workspace.yaml "$PACKAGE_DIR/"
           cp README.md README.zh.md LICENSE "$PACKAGE_DIR/"
+          cp docker-compose.yml docker-compose.sqlite.yml Dockerfile entrypoint.sh "$PACKAGE_DIR/"
           cp docker-compose.yml docker-compose.sqlite.yml Dockerfile entrypoint.sh "$PACKAGE_DIR/"
           cp nginx.conf.example servers.json "$PACKAGE_DIR/"
           

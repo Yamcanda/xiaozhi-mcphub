@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import axios from 'axios';
 import { isPostgresUrl } from '../config/database.js';
+import { isPostgresUrl } from '../config/database.js';
 
 const maskApiKey = (apiKey: string): string => {
   if (!apiKey) {
@@ -1118,6 +1119,7 @@ export const saveToolsAsVectorEmbeddings = async (
     }
 
     if (!isPostgresUrl(smartRoutingConfig.dbUrl)) {
+    if (!isPostgresUrl(smartRoutingConfig.dbUrl)) {
       console.warn(
         '[EMBED_SYNC_ERROR] Skipping tool embedding sync: PostgreSQL with pgvector is required',
         { serverName },
@@ -1628,17 +1630,15 @@ export const getAllVectorizedTools = async (
  * @param serverName Server name
  */
 export const removeServerToolEmbeddings = async (serverName: string): Promise<void> => {
-  invalidateEmbeddingBatches(serverName);
-  await withEmbeddingMutation(async () => {
-    try {
-      const smartRoutingConfig = await getSmartRoutingConfig();
-      const { getDatabaseUrlFromEnv } = await import('../config/dbEnv.js');
-      if (!smartRoutingConfig.dbUrl && !getDatabaseUrlFromEnv()) {
-        console.warn('Skipping embedding cleanup because DB URL is not configured', {
-          serverName,
-        });
-        return;
-      }
+  try {
+    const smartRoutingConfig = await getSmartRoutingConfig();
+    const { getDatabaseUrlFromEnv } = await import('../config/dbEnv.js');
+    if (!smartRoutingConfig.dbUrl && !getDatabaseUrlFromEnv()) {
+      console.warn('Skipping embedding cleanup because DB URL is not configured', {
+        serverName,
+      });
+      return;
+    }
 
       // Ensure database is initialized before using repository
       if (!isDatabaseConnected()) {

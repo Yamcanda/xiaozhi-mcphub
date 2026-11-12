@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Activity,
@@ -15,6 +15,8 @@ import {
   deleteOldActivities,
 } from '@/services/activityService';
 import Pagination from '@/components/ui/Pagination';
+import { useGroupData } from '@/hooks/useGroupData';
+import { getActivityGroupLabel } from '@/utils/activityGroup';
 
 // Pagination info type
 interface PaginationInfo {
@@ -33,6 +35,8 @@ const isValidStatus = (value: string): value is ActivityStatus =>
 
 const ActivityPage: React.FC = () => {
   const { t } = useTranslation();
+  const { groups } = useGroupData();
+  const groupNames = useMemo(() => new Map(groups.map((group) => [group.id, group.name])), [groups]);
 
   // State
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -330,87 +334,37 @@ const ActivityPage: React.FC = () => {
             <label className="sr-only" htmlFor="activity-status">
               {t('activity.status')}
             </label>
-            <div className="relative">
-              <input
-                id="activity-status"
-                type="text"
-                value={searchStatus}
-                onChange={(e) => setSearchStatus(e.target.value.toLowerCase())}
-                placeholder={t('activity.searchStatus')}
-                className="hub-input pr-9"
-                list="activity-status-options"
-              />
-              {searchStatus && (
-                <button
-                  onClick={() => setSearchStatus('')}
-                  className="absolute inset-y-0 right-2 flex items-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                  aria-label={t('common.clear')}
-                  type="button"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </button>
-              )}
-            </div>
-            <datalist id="activity-status-options">
+            <select
+              id="activity-status"
+              value={searchStatus}
+              onChange={(e) => setSearchStatus(e.target.value)}
+              className="hub-input"
+            >
+              <option value="">{t('activity.searchStatus')}</option>
               {STATUS_OPTIONS.map((status) => (
-                <option key={status} value={status} />
+                <option key={status} value={status}>
+                  {t(status === 'success' ? 'activity.statusSuccess' : 'activity.statusError')}
+                </option>
               ))}
-            </datalist>
+            </select>
           </div>
           <div className="flex-1 min-w-[140px]">
             <label className="sr-only" htmlFor="activity-group">
               {t('activity.group')}
             </label>
-            <div className="relative">
-              <input
-                id="activity-group"
-                type="text"
-                value={searchGroup}
-                onChange={(e) => setSearchGroup(e.target.value)}
-                placeholder={t('activity.searchGroup')}
-                className="hub-input pr-9"
-                list="group-options"
-              />
-              {searchGroup && (
-                <button
-                  onClick={() => setSearchGroup('')}
-                  className="absolute inset-y-0 right-2 flex items-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                  aria-label={t('common.clear')}
-                  type="button"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </button>
-              )}
-            </div>
-            {filterOptions?.groups && (
-              <datalist id="group-options">
-                {filterOptions.groups.map((g) => (
-                  <option key={g} value={g} />
-                ))}
-              </datalist>
-            )}
+            <select
+              id="activity-group"
+              value={searchGroup}
+              onChange={(e) => setSearchGroup(e.target.value)}
+              className="hub-input"
+            >
+              <option value="">{t('activity.searchGroup')}</option>
+              {filterOptions?.groups.map((group) => (
+                <option key={group} value={group}>
+                  {getActivityGroupLabel(group, groupNames)}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex-1 min-w-[140px]">
             <label className="sr-only" htmlFor="activity-username">
@@ -609,7 +563,7 @@ const ActivityPage: React.FC = () => {
                   <td
                     style={{ padding: '10px 14px', fontSize: 12, color: 'var(--hub-ink-3)' }}
                   >
-                    {activity.group || '—'}
+                    {getActivityGroupLabel(activity.group, groupNames) || '—'}
                   </td>
                   <td
                     style={{ padding: '10px 14px', fontSize: 12, color: 'var(--hub-ink-3)' }}
@@ -728,7 +682,9 @@ const ActivityPage: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">
                   {t('activity.group')}
                 </label>
-                <p className="text-gray-900 dark:text-white">{selectedActivity.group || '-'}</p>
+                <p className="text-gray-900 dark:text-white">
+                  {getActivityGroupLabel(selectedActivity.group, groupNames) || '-'}
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">
