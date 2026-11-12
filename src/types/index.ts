@@ -228,80 +228,13 @@ export interface ToolResultCompressionConfig {
   strategy?: ToolResultCompressionStrategy;
 }
 
-// 小智端点配置
-export interface XiaozhiEndpoint {
-  id: string;
-  name: string;
-  enabled: boolean;
-  webSocketUrl: string; // 完整的 WebSocket URL (包含token)
-  description?: string;
-  groupId?: string; // null表示使用全部工具
-  useSmartRouting?: boolean; // 端点是否使用智能路由
-  owner?: string; // Owning username for multi-account isolation
-  reconnect: {
-    maxAttempts: number;
-    infiniteReconnect?: boolean; // 是否启用无限重连
-    infiniteRetryDelay?: number; // 无限重连模式的固定延迟(毫秒，默认30分钟)
-    initialDelay: number;
-    maxDelay: number;
-    backoffMultiplier: number;
-  };
-  createdAt: string;
-  lastConnected?: string;
-  status?: 'connected' | 'disconnected' | 'connecting';
-}
-
-/** Live reconnect / connection diagnostics for one endpoint. */
-export interface XiaozhiEndpointRuntime {
-  reconnectAttempts: number;
-  infiniteRetryCount: number;
-  isInInfiniteReconnectMode: boolean;
-  isInSleepMode: boolean;
-  lastError?: string;
-  lastCloseCode?: number;
-  lastCloseReason?: string;
-  /** ISO time when the next reconnect is scheduled, if any */
-  nextReconnectAt?: string;
-  /** ISO time when the current socket opened */
-  connectedAt?: string;
-  /** Seconds the current socket has been open */
-  uptimeSeconds?: number;
-}
-
-// 小智端点状态信息
-export interface XiaozhiEndpointStatus {
-  endpoint: XiaozhiEndpoint;
-  connected: boolean;
-  connectionCount: number;
-  tools?: Tool[];
-  lastConnected?: string;
-  error?: string;
-  runtime?: XiaozhiEndpointRuntime;
-}
-
-/** Compact Xiaozhi slice for GET /health */
-export interface XiaozhiHealthSummary {
-  /** False when DB is off / Xiaozhi subsystem unavailable */
-  available: boolean;
-  enabledTotal: number;
-  connected: number;
-  disconnected: number;
-  pendingReconnects: number;
-}
-
-// 小智多端点配置
-export interface XiaozhiConfig {
-  /**
-   * Legacy global flag kept for admin diagnostics only.
-   * Connections are gated solely by each endpoint.enabled.
-   */
-  enabled: boolean;
-  endpoints: XiaozhiEndpoint[];
-  loadBalancing?: {
-    enabled: boolean;
-    strategy: 'round-robin' | 'random' | 'least-connections';
-  };
-}
+export type {
+  XiaozhiEndpoint,
+  XiaozhiEndpointRuntime,
+  XiaozhiEndpointStatus,
+  XiaozhiHealthSummary,
+  XiaozhiConfig,
+} from './xiaozhi.js';
 
 // SMTP settings used by the email service (verification & password reset)
 export interface EmailConfig {
@@ -652,21 +585,8 @@ export interface ServerInfo {
   };
 }
 
-// Details about a tool available on the server
-export interface Tool {
-  name: string; // Name of the tool
-  title?: string; // Human-readable title
-  description: string; // Brief description of the tool
-  defaultDescription?: string; // Upstream tool description before any MCPHub override is applied
-  hasDescriptionOverride?: boolean; // Whether MCPHub is currently overriding the upstream description
-  inputSchema: Record<string, unknown>; // Input schema for the tool
-  outputSchema?: Record<string, unknown>; // Optional schema for structured output
-  annotations?: Record<string, unknown>; // Standard MCP tool annotations
-  execution?: Record<string, unknown>; // Standard MCP execution metadata
-  icons?: Array<Record<string, unknown>>; // Standard MCP icons
-  _meta?: Record<string, unknown>; // Extension metadata, including MCP Apps metadata
-  enabled?: boolean; // Whether the tool is enabled (optional, defaults to true)
-}
+import type { Tool } from './tool.js';
+export type { Tool } from './tool.js';
 
 export interface Prompt {
   name: string; // Name of the prompt

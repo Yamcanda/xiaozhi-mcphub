@@ -1355,6 +1355,7 @@
       "connecting": "Yeniden bağlanıyor…",
       "initialDelay": "Başlangıç gecikmesi",
       "maxAttempts": "Maks. deneme",
+      "nextAt": "Sonraki yeniden bağlanma",
       "title": "Yeniden bağlan"
     },
     "status": {
@@ -1364,6 +1365,16 @@
       "enabled": "Etkin",
       "service": "Servis durumu",
       "totalEndpoints": "Toplam uç nokta",
+      "transportConnected": "WebSocket bağlı",
+      "transportHint": "Sayı, Xiaozhi onayını değil yerel WebSocket bağlantısını gösterir. Her 30 saniyede kontrol edilir; 10 saniyede pong gelmezse yeniden bağlanır.",
+      "unavailable": "Güncel bağlantı durumu alınamıyor. Eski durum temizlendi; yeniden deneniyor.",
+      "toolsListSent": "Araç listesi yanıtı gönderildi",
+      "toolsListPending": "Xiaozhi isteği bekleniyor",
+      "lastPong": "Son kalp atışı yanıtı",
+      "heartbeatPending": "İlk kontrol bekleniyor",
+      "lastClose": "Son bağlantı kesilmesi",
+      "uptime": "Mevcut bağlantı süresi",
+      "connecting": "Bağlanıyor",
       "unknown": "Bilinmiyor"
     },
     "title": "Xiaozhi Uç Noktaları",

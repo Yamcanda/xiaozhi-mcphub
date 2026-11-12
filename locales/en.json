@@ -1321,6 +1321,15 @@
     "status": {
       "service": "Service Status",
       "totalEndpoints": "Total Endpoints",
+      "transportConnected": "WebSocket connected",
+      "transportHint": "Connection counts reflect local WebSocket transport, not official Xiaozhi online acknowledgement. Heartbeats run every 30 seconds; no pong within 10 seconds triggers a reconnect.",
+      "unavailable": "Latest connection status is unavailable. Old status has been cleared; retrying.",
+      "toolsListSent": "Tools list response sent",
+      "toolsListPending": "Waiting for Xiaozhi request",
+      "lastPong": "Last heartbeat response",
+      "heartbeatPending": "Waiting for first check",
+      "lastClose": "Last disconnect",
+      "uptime": "Current connection uptime",
       "enabled": "Enabled",
       "disabled": "Disabled",
       "connected": "Connected",
@@ -1344,6 +1353,7 @@
       "title": "Reconnect",
       "connecting": "Reconnecting...",
       "maxAttempts": "Max Attempts",
+      "nextAt": "Next reconnect",
       "initialDelay": "Initial Delay"
     },
     "form": {

@@ -9,7 +9,7 @@
 let databaseUrlDeprecationWarned = false;
 
 /**
- * Resolve the effective PostgreSQL connection string from the environment.
+ * Resolve the effective PostgreSQL or SQLite connection string from the environment.
  * Prefer DB_URL; fall back to legacy DATABASE_URL with a one-time warning.
  */
 export function getDatabaseUrlFromEnv(): string | undefined {

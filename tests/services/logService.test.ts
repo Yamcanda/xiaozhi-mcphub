@@ -27,6 +27,43 @@ describe('logService error serialization', () => {
     expect(lastLog?.message).not.toContain('"error": {}');
   });
 
+  it.each([
+    { prefix: '[firecrawl] [child]', lineEnding: 'LF', newline: '\n' },
+    { prefix: '[firecrawl] [child]', lineEnding: 'CRLF', newline: '\r\n' },
+    { prefix: '[firecrawl] [child-456]', lineEnding: 'LF', newline: '\n' },
+    { prefix: '[firecrawl] [child-456]', lineEnding: 'CRLF', newline: '\r\n' },
+  ])('keeps multiline structured logs for $prefix with $lineEnding', ({ prefix, newline }) => {
+    const message = [
+      'node:internal/modules/esm/resolve:275',
+      "Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'example.js'",
+      '    at ModuleLoader.resolve (node:internal/modules/esm/loader:690:38)',
+      '',
+      'Node.js v22.0.0',
+    ].join(newline);
+    const subscriber = jest.fn();
+    const streamSubscriber = jest.fn();
+    const unsubscribe = logService.subscribe(subscriber);
+    const unsubscribeFromStream = logService.subscribeToStream(streamSubscriber);
+
+    try {
+      console.error(`${prefix} ${message}`);
+
+      const logs = logService.getLogs();
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toMatchObject({
+        type: 'error',
+        source: 'child',
+        processId: 'firecrawl',
+        message,
+      });
+      expect(subscriber).toHaveBeenCalledWith(logs[0]);
+      expect(streamSubscriber).toHaveBeenCalledWith({ type: 'log', log: logs[0] });
+    } finally {
+      unsubscribe();
+      unsubscribeFromStream();
+    }
+  });
+
   it('redacts direct remote HTTP errors when logging Error instances', () => {
     const error = Object.assign(new Error('oauth access_token=top-secret'), {
       code: 'ERR_BAD_REQUEST',

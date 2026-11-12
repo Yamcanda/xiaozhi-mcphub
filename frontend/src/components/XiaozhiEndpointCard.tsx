@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pencil, RefreshCw, Trash2 } from 'lucide-react';
-import ConfirmDialog from './ui/ConfirmDialog';
-import { StatusDot, DotKind } from './ui/StatusDot';
-import { XiaozhiEndpoint, XiaozhiEndpointStatus } from '../hooks/useXiaozhiEndpoints';
+import ConfirmDialog from './ui/ConfirmDialog.js';
+import { StatusDot, DotKind } from './ui/StatusDot.js';
+import type { XiaozhiEndpoint, XiaozhiEndpointStatus } from '../../../src/types/xiaozhi.js';
 
 interface XiaozhiEndpointCardProps {
   endpoint: XiaozhiEndpoint;
@@ -44,8 +44,11 @@ const XiaozhiEndpointCard: React.FC<XiaozhiEndpointCardProps> = ({
     if (!status) {
       return { kind: 'muted', label: t('xiaozhi.status.unknown') };
     }
+    if (status.endpoint.status === 'connecting') {
+      return { kind: 'warn', label: t('xiaozhi.status.connecting') };
+    }
     return status.connected
-      ? { kind: 'ok', label: t('xiaozhi.status.connected') }
+      ? { kind: 'ok', label: t('xiaozhi.status.transportConnected') }
       : { kind: 'err', label: t('xiaozhi.status.disconnected') };
   };
 
@@ -55,9 +58,7 @@ const XiaozhiEndpointCard: React.FC<XiaozhiEndpointCardProps> = ({
   };
 
   const { kind, label } = statusDot();
-  const metaLabel = (text: string) => (
-    <span style={{ color: 'var(--hub-ink-3)' }}>{text}</span>
-  );
+  const metaLabel = (text: string) => <span style={{ color: 'var(--hub-ink-3)' }}>{text}</span>;
 
   return (
     <div className="hub-card flex h-full flex-col overflow-hidden">
@@ -89,7 +90,10 @@ const XiaozhiEndpointCard: React.FC<XiaozhiEndpointCardProps> = ({
             )}
           </div>
           {endpoint.description && (
-            <div className="truncate" style={{ fontSize: 12.5, color: 'var(--hub-ink-3)', marginTop: 2 }}>
+            <div
+              className="truncate"
+              style={{ fontSize: 12.5, color: 'var(--hub-ink-3)', marginTop: 2 }}
+            >
               {endpoint.description}
             </div>
           )}
@@ -138,7 +142,7 @@ const XiaozhiEndpointCard: React.FC<XiaozhiEndpointCardProps> = ({
           <div className="min-w-0">
             {metaLabel(t('xiaozhi.lastConnected'))}
             <div className="truncate" style={{ color: 'var(--hub-ink-2)' }}>
-              {formatDate(endpoint.lastConnected)}
+              {formatDate(status?.lastConnected || endpoint.lastConnected)}
             </div>
           </div>
           <div className="min-w-0">
@@ -155,13 +159,47 @@ const XiaozhiEndpointCard: React.FC<XiaozhiEndpointCardProps> = ({
           </div>
         </div>
 
-        {(status?.error || status?.runtime?.nextReconnectAt || (status?.runtime?.uptimeSeconds ?? 0) > 0) && (
+        {status && (
           <div
             className="space-y-1 rounded-md px-2 py-1.5"
-            style={{ background: 'var(--hub-bg-2)', border: '1px solid var(--hub-line)', fontSize: 12 }}
+            style={{
+              background: 'var(--hub-bg-2)',
+              border: '1px solid var(--hub-line)',
+              fontSize: 12,
+            }}
           >
+            {status.connected && (
+              <>
+                <div style={{ color: 'var(--hub-ink-3)' }}>
+                  {t('xiaozhi.status.toolsListSent')}
+                  {': '}
+                  {status.runtime?.toolsListSentAt
+                    ? formatDate(status.runtime.toolsListSentAt)
+                    : t('xiaozhi.status.toolsListPending')}
+                </div>
+                <div style={{ color: 'var(--hub-ink-3)' }}>
+                  {t('xiaozhi.status.lastPong')}
+                  {': '}
+                  {status.runtime?.lastPongAt
+                    ? formatDate(status.runtime.lastPongAt)
+                    : t('xiaozhi.status.heartbeatPending')}
+                </div>
+              </>
+            )}
+            {status.runtime?.lastCloseCode !== undefined && (
+              <div style={{ color: 'var(--hub-ink-3)', overflowWrap: 'anywhere' }}>
+                {t('xiaozhi.status.lastClose')}
+                {': '}
+                {formatDate(status.runtime.lastCloseAt)} · {status.runtime.lastCloseCode}
+                {status.runtime.lastCloseReason ? ` · ${status.runtime.lastCloseReason}` : ''}
+              </div>
+            )}
             {status?.error && !status.connected && (
-              <div className="truncate" style={{ color: 'var(--hub-danger, #c44)' }} title={status.error}>
+              <div
+                className="truncate"
+                style={{ color: 'var(--hub-danger, #c44)' }}
+                title={status.error}
+              >
                 {status.error}
               </div>
             )}

@@ -1,7 +1,10 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { createRequire } from 'module';
+import { randomBytes } from 'node:crypto';
+import { parse } from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,18 +58,51 @@ function printPrepareResult(created) {
   );
 }
 
+function resolveDevJwtSecret(env) {
+  if (env.JWT_SECRET) return env.JWT_SECRET;
+  const envPath = path.join(projectRoot, '.env');
+  let configuredSecret;
+  try {
+    configuredSecret = parse(fs.readFileSync(envPath)).JWT_SECRET;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  // Keep one random key in the unwatched parent so automatic restarts keep sessions valid.
+  return configuredSecret || randomBytes(32).toString('hex');
+}
+
 function startBackend(extraArgs) {
   const configuration = resolveDevConfiguration();
+  configuration.childEnvironment.JWT_SECRET = resolveDevJwtSecret(process.env);
   prepareDevSettingsFile(configuration.settingsPath);
 
   console.log('[dev] Starting backend dev server');
   console.log('[dev] Using isolated development settings');
 
-  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  const child = spawn(pnpm, ['exec', 'tsx', 'watch', 'src/index.ts', ...extraArgs], {
+  const require = createRequire(import.meta.url);
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  const supportsImport =
+    major > 20 || (major === 20 && minor >= 6) || (major === 18 && minor >= 19);
+  // Use Node's watcher to avoid tsx watch's preflight loading on Windows.
+  // Keep the CLI fallback for Node versions without module.register().
+  const childArgs = supportsImport
+    ? [
+        '--watch',
+        ...extraArgs,
+        '--import',
+        pathToFileURL(require.resolve('tsx')).href,
+        'src/index.ts',
+      ]
+    : [require.resolve('tsx/cli'), 'watch', ...extraArgs, 'src/index.ts'];
+  const child = spawn(process.execPath, childArgs, {
     cwd: projectRoot,
     env: configuration.childEnvironment,
     stdio: 'inherit',
+  });
+
+  child.on('error', (error) => {
+    console.error('[dev] Failed to start backend:', error.message);
+    process.exit(1);
   });
 
   for (const signal of ['SIGINT', 'SIGTERM']) {

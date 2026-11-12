@@ -6,6 +6,8 @@ import request from 'supertest';
 
 const initMiddlewaresMock = jest.fn();
 const initRoutesMock = jest.fn();
+const closeRouteResourcesMock = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+const cleanupAllServersMock = jest.fn();
 const initUpstreamServersMock = jest.fn().mockResolvedValue(undefined);
 const handleSseConnectionMock = jest.fn((_req, res) => res.status(204).send());
 const handleSseMessageMock = jest.fn((_req, res) => res.status(204).send());
@@ -43,13 +45,14 @@ jest.mock('../../src/middlewares/index.js', () => ({
 jest.mock('../../src/routes/index.js', () => ({
   __esModule: true,
   initRoutes: initRoutesMock,
+  closeRouteResources: closeRouteResourcesMock,
 }));
 
 jest.mock('../../src/services/mcpService.js', () => ({
   __esModule: true,
   initUpstreamServers: initUpstreamServersMock,
   connected: jest.fn().mockReturnValue(true),
-  cleanupAllServers: jest.fn(),
+  cleanupAllServers: cleanupAllServersMock,
 }));
 
 jest.mock('../../src/services/sseService.js', () => ({
@@ -86,7 +89,9 @@ describe('AppServer headless web mode', () => {
     delete process.env.DISABLE_WEB;
     frontendDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcphub-frontend-'));
     fs.writeFileSync(path.join(frontendDir, 'index.html'), '<html><body>test ui</body></html>');
-    jest.spyOn(AppServer.prototype as never, 'findFrontendDistPath' as never).mockReturnValue(frontendDir);
+    jest
+      .spyOn(AppServer.prototype as never, 'findFrontendDistPath' as never)
+      .mockReturnValue(frontendDir);
   });
 
   afterEach(() => {
@@ -113,6 +118,26 @@ describe('AppServer headless web mode', () => {
     const response = await request(app).get('/').expect(200);
 
     expect(response.text).toContain('test ui');
+  });
+
+  it('closes route-owned auth storage during shutdown without enabling database mode', async () => {
+    const originalUseDb = process.env.USE_DB;
+    process.env.USE_DB = 'false';
+    const appServer = new AppServer();
+    try {
+      await appServer.initialize();
+      await flushPromises();
+      await appServer.shutdown();
+
+      expect(cleanupAllServersMock).toHaveBeenCalledTimes(1);
+      expect(closeRouteResourcesMock).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalUseDb === undefined) {
+        delete process.env.USE_DB;
+      } else {
+        process.env.USE_DB = originalUseDb;
+      }
+    }
   });
 
   it('disables the web UI while keeping MCP routes available when DISABLE_WEB=true', async () => {

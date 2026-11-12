@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { AuthState } from '../types';
-import * as authService from '../services/authService';
-import { getPublicConfig } from '../services/configService';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { AuthState } from '../types/index.js';
+import * as authService from '../services/authService.js';
+import { getPublicConfig } from '../services/configService.js';
 
 // Initial auth state
 const initialState: AuthState = {
@@ -17,7 +17,12 @@ const AuthContext = createContext<{
   login: (
     username: string,
     password: string,
-  ) => Promise<{ success: boolean; isUsingDefaultPassword?: boolean; message?: string; code?: string }>;
+  ) => Promise<{
+    success: boolean;
+    isUsingDefaultPassword?: boolean;
+    message?: string;
+    code?: string;
+  }>;
   register: (
     username: string,
     password: string,
@@ -34,97 +39,73 @@ const AuthContext = createContext<{
 // Auth provider component
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [auth, setAuth] = useState<AuthState>(initialState);
+  const operation = useRef(0);
 
-  // Load user if token exists
+  useEffect(
+    () =>
+      authService.subscribeAuthInvalidation(() => {
+        if (auth.loading) return;
+        setAuth({ ...initialState, loading: false });
+      }),
+    [auth.loading],
+  );
+
+  // Restore once; stale startup work must not overwrite a later login or logout.
   useEffect(() => {
-    const loadUser = async () => {
-      // First check if authentication should be skipped
-      const { skipAuth, permissions } = await getPublicConfig();
-
-      if (skipAuth) {
-        // If authentication is disabled, set user as authenticated with a dummy user
-        setAuth({
-          isAuthenticated: true,
-          loading: false,
-          user: {
-            username: 'guest',
-            isAdmin: true,
-            permissions,
-          },
-          error: null,
-        });
-        return;
-      }
-
-      // Normal authentication flow
-      const token = authService.getToken();
-
-      if (!token) {
-        const betterAuthResponse = await authService.getBetterAuthUser();
-        if (betterAuthResponse.success && betterAuthResponse.user) {
+    const currentOperation = ++operation.current;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const isCurrent = () => !cancelled && operation.current === currentOperation;
+    const loadUser = async (): Promise<void> => {
+      try {
+        const { skipAuth, permissions } = await getPublicConfig();
+        if (!isCurrent()) return;
+        if (skipAuth) {
           setAuth({
             isAuthenticated: true,
             loading: false,
-            user: betterAuthResponse.user,
+            user: { username: 'guest', isAdmin: true, permissions },
             error: null,
           });
           return;
         }
 
-        setAuth({
-          ...initialState,
-          loading: false,
-        });
-        return;
-      }
-
-      try {
-        const response = await authService.getCurrentUser();
-
+        const revision = authService.getAuthRevision();
+        const hadToken = !!authService.getToken();
+        let response = hadToken
+          ? await authService.getCurrentUser()
+          : await authService.getBetterAuthUser();
+        if (!isCurrent()) return;
+        if (hadToken && !response.success && revision === authService.getAuthRevision()) {
+          // A rejected JWT may still have an independent valid cookie session.
+          response = await authService.getBetterAuthUser();
+          if (!isCurrent()) return;
+        }
+        if (revision !== authService.getAuthRevision()) {
+          // Recheck credentials changed by a parallel rejection or a login in another tab.
+          void loadUser();
+          return;
+        }
         if (response.success && response.user) {
-          setAuth({
-            isAuthenticated: true,
-            loading: false,
-            user: response.user,
-            error: null,
-          });
+          setAuth({ isAuthenticated: true, loading: false, user: response.user, error: null });
         } else {
-          authService.removeToken();
-          const betterAuthResponse = await authService.getBetterAuthUser();
-          if (betterAuthResponse.success && betterAuthResponse.user) {
-            setAuth({
-              isAuthenticated: true,
-              loading: false,
-              user: betterAuthResponse.user,
-              error: null,
-            });
-          } else {
-            setAuth({
-              ...initialState,
-              loading: false,
-            });
-          }
+          setAuth({ ...initialState, loading: false });
         }
-      } catch (error) {
-        authService.removeToken();
-        const betterAuthResponse = await authService.getBetterAuthUser();
-        if (betterAuthResponse.success && betterAuthResponse.user) {
-          setAuth({
-            isAuthenticated: true,
-            loading: false,
-            user: betterAuthResponse.user,
-            error: null,
-          });
-        } else {
-          setAuth({
-            ...initialState,
-            loading: false,
-          });
-        }
+      } catch {
+        if (!isCurrent()) return;
+        // A network/5xx failure is not proof of logout. Retry without deleting credentials
+        // or granting access before the server verifies them.
+        retryTimer = setTimeout(() => {
+          void loadUser();
+        }, 2000);
       }
     };
 
-    loadUser();
+    void loadUser();
+    return () => {
+      cancelled = true;
+      clearTimeout(retryTimer);
+    };
   }, []);
 
   // Login function
@@ -137,10 +118,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     message?: string;
     code?: string;
   }> => {
+    const currentOperation = ++operation.current;
     try {
       const response = await authService.login({ username, password });
+      if (currentOperation !== operation.current) return { success: false };
 
       if (response.success && response.token && response.user) {
+        authService.setToken(response.token);
         setAuth({
           isAuthenticated: true,
           loading: false,
@@ -160,6 +144,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return { success: false, message: response.message, code: response.code };
       }
     } catch (error) {
+      if (currentOperation !== operation.current) return { success: false };
       setAuth({
         ...initialState,
         loading: false,
@@ -175,10 +160,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     password: string,
     email?: string,
   ): Promise<{ success: boolean; emailVerificationRequired?: boolean; message?: string }> => {
+    const currentOperation = ++operation.current;
     try {
       const response = await authService.register({ username, password, email });
+      if (currentOperation !== operation.current) return { success: false };
 
       if (response.success && response.token && response.user) {
+        authService.setToken(response.token);
         // Direct login (email verification off)
         setAuth({
           isAuthenticated: true,
@@ -205,6 +193,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
       return { success: false, message: response.message };
     } catch (error) {
+      if (currentOperation !== operation.current) return { success: false };
       setAuth({
         ...initialState,
         loading: false,
@@ -219,6 +208,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // Logout function
   const logout = (): void => {
+    operation.current++;
     authService.logout();
     setAuth({
       ...initialState,

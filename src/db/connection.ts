@@ -7,6 +7,8 @@ import { getSmartRoutingConfig } from '../utils/smartRouting.js';
 import { createVectorIndex } from '../services/vectorSearchService.js';
 import { isRetryableDbError } from '../utils/dbRetry.js';
 import { withTimeout } from '../utils/withTimeout.js';
+import { parseDatabaseUrl, prepareSqliteDatabase } from '../config/database.js';
+import { getDatabaseEntities } from './entities/databaseEntities.js';
 
 // Connection pool and retry configuration
 const CONNECTION_CONFIG = {
@@ -113,11 +115,25 @@ const ensureEmbeddingColumnIsVector = async (dataSource: DataSource): Promise<vo
 
 // Default database configuration with connection pooling
 const getDefaultConfig = async (): Promise<DataSourceOptions> => {
+  const target = parseDatabaseUrl(await getDatabaseUrl());
+  if (target.type === 'better-sqlite3') {
+    prepareSqliteDatabase(target.database);
+    return {
+      ...target,
+      synchronize: true,
+      entities: getDatabaseEntities(target.type),
+      enableWAL: target.database !== ':memory:',
+      prepareDatabase: (database) => {
+        database.pragma('foreign_keys = ON');
+        database.pragma('busy_timeout = 5000');
+      },
+    };
+  }
+
   return {
-    type: 'postgres',
-    url: await getDatabaseUrl(),
+    ...target,
     synchronize: true,
-    entities: entities,
+    entities,
     subscribers: [VectorEmbeddingSubscriber],
     // Connection pool configuration for better resilience
     extra: {
@@ -151,13 +167,20 @@ export const updateDataSourceConfig = async (): Promise<DataSource> => {
 
   // If the configuration has changed, we need to create a new DataSource
   if (appDataSource) {
-    const currentUrl = (appDataSource.options as any).url;
-    const newUrl = (newConfig as any).url;
-    if (currentUrl !== newUrl) {
-      console.log('Database URL configuration changed, updating DataSource...');
+    const currentOptions = appDataSource.options;
+    const sameTarget =
+      currentOptions.type === newConfig.type &&
+      (currentOptions.type === 'better-sqlite3' && newConfig.type === 'better-sqlite3'
+        ? currentOptions.database === newConfig.database
+        : 'url' in currentOptions && 'url' in newConfig && currentOptions.url === newConfig.url);
+    if (!sameTarget) {
+      console.log('Database configuration changed, updating DataSource...');
+      stopHealthCheck();
+      if (appDataSource.isInitialized) {
+        await appDataSource.destroy();
+      }
+      isHealthy = false;
       appDataSource = new DataSource(newConfig);
-      // Reset initialization promise when configuration changes
-      initializationPromise = null;
     }
   } else {
     // First time initialization
@@ -237,8 +260,13 @@ const performDatabaseInitialization = async (): Promise<DataSource> => {
       }
 
       console.log('Initializing database connection...');
-      // Register the vector type with TypeORM
       await appDataSource.initialize();
+      if (appDataSource.options.type === 'better-sqlite3') {
+        console.log(
+          'SQLite database connection established. PostgreSQL vector features are disabled.',
+        );
+        return appDataSource;
+      }
       registerPostgresVectorType(appDataSource);
 
       // Create required PostgreSQL extensions
@@ -387,7 +415,10 @@ const performDatabaseInitialization = async (): Promise<DataSource> => {
             try {
               await ensureEmbeddingColumnIsVector(appDataSource);
             } catch (alterError: any) {
-              console.warn('Could not ensure embedding column type in final check:', alterError.message);
+              console.warn(
+                'Could not ensure embedding column type in final check:',
+                alterError.message,
+              );
             }
 
             // Get the dimension size first
@@ -581,6 +612,15 @@ const attemptReconnection = (): Promise<DataSource> => {
 
       let dataSource = appDataSource;
 
+      if (dataSource.options.type === 'better-sqlite3' && dataSource.isInitialized) {
+        // Reopening an in-memory database destroys its data. SQLite is a local handle,
+        // not a network pool: check it in place rather than reconnecting on query errors.
+        await dataSource.query('SELECT 1');
+        isHealthy = true;
+        lastHealthCheckError = null;
+        return dataSource;
+      }
+
       if (dataSource.isInitialized) {
         try {
           console.log('[DB Reconnect] Closing existing connection...');
@@ -614,7 +654,9 @@ const attemptReconnection = (): Promise<DataSource> => {
           // connection stuck in `idle in transaction` and blocking pool
           // teardown. The schema was already synchronized at startup.
           await initializeWithoutSynchronize(dataSource);
-          registerPostgresVectorType(dataSource);
+          if (dataSource.options.type === 'postgres') {
+            registerPostgresVectorType(dataSource);
+          }
           appDataSource = dataSource;
 
           console.log('[DB Reconnect] Successfully reconnected to database');
@@ -681,6 +723,8 @@ export const closeDatabase = async (): Promise<void> => {
     console.log('Database connection closed.');
   }
   isHealthy = false;
+  lastHealthCheckError = null;
+  initializationPromise = null;
 };
 
 // Export AppDataSource for backward compatibility

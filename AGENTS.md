@@ -21,7 +21,7 @@ Layout map (read the directory when you need specifics, don't expand it here):
 
 - `src/{routes,controllers,services,dao,db,middlewares,models,utils,types,config,clients}/`
 - `src/services/mcpService.ts` — **core** MCP connection/lifecycle logic
-- `src/dao/` + `src/db/` — dual datasource (JSON file by default, PostgreSQL when `USE_DB=true`)
+- `src/dao/` + `src/db/` — JSON file by default; PostgreSQL or SQLite selected by `DB_URL` (unless `USE_DB=false`)
 - `tests/` mirrors `src/`; colocated `*.test.ts` also picked up
 - `locales/{en,fr,tr,vi,zh}.json` — i18n strings
 - `dist/`, `frontend/dist/`, `coverage/` — generated; never hand-edit
@@ -82,9 +82,9 @@ The runtime requirement is `>=24.0.0` (see `package.json`); CI runs on Node 24.x
 
 ## 4. Architecture invariants
 
-### Dual datasource (JSON ⇄ PostgreSQL)
+### Storage backends (JSON ⇄ PostgreSQL / SQLite)
 
-`USE_DB=true` + `DB_URL` switches storage from `mcp_settings.json` to Postgres via TypeORM.
+`DB_URL` enables TypeORM storage: `postgres://` / `postgresql://` select PostgreSQL, `sqlite:./data/mcphub.sqlite` selects SQLite. `USE_DB=false` forces JSON; legacy `DATABASE_URL` remains a fallback. SQLite uses per-datasource schemas from `src/db/entities/databaseEntities.ts` without changing PostgreSQL decorators. Vector search is PostgreSQL/pgvector-only; never execute its bootstrap or SQL on SQLite.
 
 **When adding/changing a persisted field, update every layer or migrations will silently drop it:**
 

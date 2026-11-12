@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { initUpstreamServers, connected, cleanupAllServers } from './services/mcpService.js';
 import { initMiddlewares } from './middlewares/index.js';
-import { initRoutes } from './routes/index.js';
+import { initRoutes, closeRouteResources } from './routes/index.js';
 import { initI18n } from './utils/i18n.js';
 import {
   handleSseConnection,
@@ -93,7 +93,7 @@ export class AppServer {
       // Preload Xiaozhi configuration from database before initializing upstream servers
       try {
         const { xiaozhiEndpointService } = await import('./services/xiaozhiEndpointService.js');
-        await xiaozhiEndpointService.reloadConfig();
+        await xiaozhiEndpointService.preloadConfig();
         console.log('Preloaded Xiaozhi configuration from database');
       } catch (error) {
         console.warn('Failed to preload Xiaozhi configuration:', error);
@@ -108,8 +108,7 @@ export class AppServer {
             `${this.basePath}/sse/:group(.*)?`,
             mcpConnectionRateLimiter,
             sseUserContextMiddleware,
-            (req, res) =>
-            handleSseConnection(req, res),
+            (req, res) => handleSseConnection(req, res),
           );
           this.app.post(
             `${this.basePath}/messages`,
@@ -253,6 +252,12 @@ export class AppServer {
       console.error('[SHUTDOWN] Error closing MCP clients', safeStringify({ error }));
     }
 
+    try {
+      await closeRouteResources();
+    } catch (error) {
+      console.error('[SHUTDOWN] Error closing auth storage', safeStringify({ error }));
+    }
+
     // Close database connection if in database mode
     const { isDatabaseModeEnabled } = await import('./config/dbEnv.js');
     const useDatabase = isDatabaseModeEnabled();
@@ -328,7 +333,9 @@ export class AppServer {
   private registerFrontendUnavailableRoute(): void {
     const rootPath = this.basePath || '/';
     this.app.get(rootPath, (_req, res) => {
-      res.status(404).send('Frontend not found. MCPHub API is running, but the UI is not available.');
+      res
+        .status(404)
+        .send('Frontend not found. MCPHub API is running, but the UI is not available.');
     });
   }
 }

@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, AlertCircle, X, Bot } from 'lucide-react';
-import XiaozhiEndpointCard from '../components/XiaozhiEndpointCard';
-import XiaozhiEndpointModal from '../components/XiaozhiEndpointModal';
-import { useXiaozhiEndpoints, XiaozhiEndpoint } from '../hooks/useXiaozhiEndpoints';
-import { ApiResponse } from '@/types';
-import { apiGet } from '../utils/fetchInterceptor';
+import { Plus, AlertCircle, X, Bot, RefreshCw } from 'lucide-react';
+import XiaozhiEndpointCard from '../components/XiaozhiEndpointCard.js';
+import XiaozhiEndpointModal from '../components/XiaozhiEndpointModal.js';
+import { useXiaozhiEndpoints, XiaozhiEndpoint } from '../hooks/useXiaozhiEndpoints.js';
+import { ApiResponse } from '../types/index.js';
+import { apiGet } from '../utils/fetchInterceptor.js';
 
 interface Group {
   id: string;
@@ -65,6 +65,8 @@ const XiaozhiEndpointsPage: React.FC = () => {
     getConnectedCount,
     getEnabledCount,
     isEndpointReconnecting,
+    statusError,
+    triggerRefresh,
   } = useXiaozhiEndpoints();
 
   const [groups, setGroups] = useState<Group[]>([]);
@@ -132,10 +134,14 @@ const XiaozhiEndpointsPage: React.FC = () => {
           <p className="hub-sub">
             <span className="hub-num">{endpoints.length}</span> {t('xiaozhi.endpointsUnit')}
             {'  ·  '}
-            {t('xiaozhi.status.connected')} · <span className="hub-num">{getConnectedCount()}</span>
+            {t('xiaozhi.status.transportConnected')} ·{' '}
+            <span className="hub-num">{getConnectedCount()}</span>
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <button className="hub-btn" onClick={triggerRefresh}>
+            <RefreshCw size={13} /> {t('common.refresh')}
+          </button>
           <button className="hub-btn primary" onClick={handleCreateNew}>
             <Plus size={13} /> {t('xiaozhi.addEndpoint')}
           </button>
@@ -167,6 +173,17 @@ const XiaozhiEndpointsPage: React.FC = () => {
         </div>
       )}
 
+      <p className="hub-sub mb-4">{t('xiaozhi.status.transportHint')}</p>
+      {statusError && (
+        <div
+          role="status"
+          className="hub-card px-4 py-3 mb-4"
+          style={{ color: 'var(--hub-ink-2)' }}
+        >
+          {t('xiaozhi.status.unavailable')}
+        </div>
+      )}
+
       {/* Stat row */}
       {showSkeleton ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -188,7 +205,7 @@ const XiaozhiEndpointsPage: React.FC = () => {
           <Stat label={t('xiaozhi.status.totalEndpoints')} value={endpoints.length} />
           <Stat label={t('xiaozhi.status.enabled')} value={getEnabledCount()} />
           <Stat
-            label={t('xiaozhi.status.connected')}
+            label={t('xiaozhi.status.transportConnected')}
             value={getConnectedCount()}
             tone={getConnectedCount() > 0 ? 'ok' : 'muted'}
           />

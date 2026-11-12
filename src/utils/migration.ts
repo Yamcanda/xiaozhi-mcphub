@@ -56,9 +56,11 @@ export function applyLegacyOwnerDefaults(settings: McpSettings): OwnerBackfillRe
 
   // Xiaozhi endpoints normally live in DB only; keep a defensive path for any
   // legacy file-mode payloads that still embed them under settings.xiaozhi.
-  const legacyXiaozhi = (settings as McpSettings & {
-    xiaozhi?: { endpoints?: Array<{ owner?: string | null }> };
-  }).xiaozhi;
+  const legacyXiaozhi = (
+    settings as McpSettings & {
+      xiaozhi?: { endpoints?: Array<{ owner?: string | null }> };
+    }
+  ).xiaozhi;
   if (legacyXiaozhi?.endpoints) {
     for (const endpoint of legacyXiaozhi.endpoints) {
       if (isMissingOwner(endpoint.owner)) {
@@ -442,8 +444,10 @@ export async function initializeDatabaseMode(): Promise<boolean> {
 
     // v1.0.x → 1.1.x in-place upgrades (mcp_servers → servers, column renames, owners)
     // Must run before DAO reads so upgraded installs see their existing data.
-    const { runLegacySchemaMigrations } = await import('./legacySchemaMigration.js');
-    await runLegacySchemaMigrations(getAppDataSource());
+    if (getAppDataSource().options.type === 'postgres') {
+      const { runLegacySchemaMigrations } = await import('./legacySchemaMigration.js');
+      await runLegacySchemaMigrations(getAppDataSource());
+    }
 
     // Switch to database factory
     setDaoFactory(DatabaseDaoFactory.getInstance());

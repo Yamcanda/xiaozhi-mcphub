@@ -27,10 +27,9 @@ describe('dbEnv', () => {
     process.env.DATABASE_URL = '  postgres://legacy/db  ';
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    const {
-      getDatabaseUrlFromEnv,
-      resetDatabaseUrlDeprecationWarningForTests,
-    } = await import('./dbEnv.js');
+    const { getDatabaseUrlFromEnv, resetDatabaseUrlDeprecationWarningForTests } = await import(
+      './dbEnv.js'
+    );
     resetDatabaseUrlDeprecationWarningForTests();
 
     expect(getDatabaseUrlFromEnv()).toBe('postgres://legacy/db');
@@ -47,6 +46,15 @@ describe('dbEnv', () => {
 
     const { getDatabaseUrlFromEnv, isDatabaseModeEnabled } = await import('./dbEnv.js');
     expect(getDatabaseUrlFromEnv()).toBeUndefined();
+    expect(isDatabaseModeEnabled()).toBe(false);
+  });
+
+  it('enables SQLite mode with the same explicit USE_DB override', async () => {
+    process.env.DB_URL = ' sqlite:./data/mcphub.sqlite ';
+    const { getDatabaseUrlFromEnv, isDatabaseModeEnabled } = await import('./dbEnv.js');
+    expect(getDatabaseUrlFromEnv()).toBe('sqlite:./data/mcphub.sqlite');
+    expect(isDatabaseModeEnabled()).toBe(true);
+    process.env.USE_DB = 'false';
     expect(isDatabaseModeEnabled()).toBe(false);
   });
 

@@ -172,6 +172,19 @@ describe('database connection recovery', () => {
     }
   });
 
+  it('skips PostgreSQL bootstrap and vector registration for SQLite, including reconnect', async () => {
+    getSmartRoutingConfigMock.mockResolvedValueOnce({ dbUrl: 'sqlite::memory:' });
+    const dataSource = await initializeDatabase();
+    expect(dataSource.options.type).toBe('better-sqlite3');
+    expect(dataSource.options).toMatchObject({ database: ':memory:', enableWAL: false });
+    expect(prepareLegacySchemaBeforeSynchronizeMock).not.toHaveBeenCalled();
+    expect(registerPostgresVectorTypeMock).not.toHaveBeenCalled();
+    expect(dataSource.query).not.toHaveBeenCalled();
+    await reconnectDatabase();
+    expect(dataSource.destroy).not.toHaveBeenCalled();
+    expect(dataSource.query).toHaveBeenCalledWith('SELECT 1');
+  });
+
   it('recovers when the driver pool is gone but TypeORM still reports the DataSource as initialized', async () => {
     jest.useFakeTimers();
     const dataSource = await updateDataSourceConfig();

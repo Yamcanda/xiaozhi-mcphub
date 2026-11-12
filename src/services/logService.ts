@@ -169,7 +169,8 @@ class LogService {
     const argStr = String(arg);
 
     // Check for patterns like [processId] [source] message or [processId] [source-processId] message
-    const structuredPattern = /^\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*(.*)/;
+    // Preserve multiline child output, including error details and stack traces.
+    const structuredPattern = /^\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*(.*)/s;
     const match = argStr.match(structuredPattern);
 
     if (match) {
